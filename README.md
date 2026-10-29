@@ -3,8 +3,8 @@
 **Question.** After a fact is unlearned through text-only questions, does it remain answerable
 through image+text questions about the same fact?
 
-**Governing protocol.** `PROTOCOL.md` plus its Addendum. Every change relative to the earlier
-[PLAN.md](PLAN.md), and every provisional interpretation, is in [DEVIATIONS.md](DEVIATIONS.md).
+**Governing protocol.** `PROTOCOL.md` plus its Addendum. Every deviation and every provisional
+interpretation is in [DEVIATIONS.md](DEVIATIONS.md).
 The current state is in [STATUS_README.md](STATUS_README.md), and the E0 data facts are in
 [analysis/data_audit.md](analysis/data_audit.md).
 

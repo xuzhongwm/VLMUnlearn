@@ -20,7 +20,9 @@ value or a single function.
 ## Entries
 
 ### DEV-001 — 2026-10-29 — protocol switch (decided by: PI)
-`PROTOCOL.md` + Addendum A–D replace `PLAN.md` D1–D9. `PLAN.md` is kept unchanged for history.
+`PROTOCOL.md` + Addendum A–D replace `PLAN.md` D1–D9. `PLAN.md` and the earlier draft `new_plan.md` were
+deleted from the working tree on 2026-10-29 as outdated; they remain in git history (`git show a14952d:PLAN.md`,
+`git show 3fb863e:new_plan.md`).
 
 What changed in the code:
 - **Splits (§4.2), `configs/data.yaml`, `vlmu/data/build.py`, all frozen in `splits.json`:**
