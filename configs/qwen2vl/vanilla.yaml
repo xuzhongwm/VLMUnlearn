@@ -1,0 +1,15 @@
+# Vanilla fine-tune (D2): LoRA on the public base model, ft_Data in BOTH forms
+# (photo + "this person", and name-substituted text-only). Merged at load time.
+base: [../data.yaml, ../models/qwen2vl.yaml]
+train:
+  lr: 2.0e-4
+  epochs: 3
+  batch_size: 8
+  warmup_ratio: 0.03
+  seed: 0
+  save_every_steps: 500      # resume checkpoints (disconnect safety)
+  log_every: 50
+gate: {min_forget_acc: 80.0}   # paired forget MC, BOTH modalities, before any unlearning
+debug_rows: 24
+debug_overrides:
+  train: {max_steps: 6, save_every_steps: 3, log_every: 1, epochs: 1}

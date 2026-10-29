@@ -1,0 +1,11 @@
+# Phase A model (pipeline development).
+model:
+  name: qwen2vl
+  family: qwen2vl
+  id: Qwen/Qwen2-VL-2B-Instruct
+  min_pixels: 50176          # 224*224
+  max_pixels: 200704         # 448*448 -> at most 256 visual tokens
+lora: {r: 16, alpha: 16, dropout: 0.05, gradient_checkpointing: true}   # as MLLMU baselines
+eval: {batch_size_img: 32, batch_size_txt: 64, max_per_group: null}
+debug_overrides:
+  eval: {max_per_group: 10}

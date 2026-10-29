@@ -1,0 +1,9 @@
+# Phase B model (actual results).
+model:
+  name: llava
+  family: llava
+  id: llava-hf/llava-1.5-7b-hf
+lora: {r: 16, alpha: 16, dropout: 0.05, gradient_checkpointing: true}   # as MLLMU baselines
+eval: {batch_size_img: 16, batch_size_txt: 64, max_per_group: null}
+debug_overrides:
+  eval: {max_per_group: 10}

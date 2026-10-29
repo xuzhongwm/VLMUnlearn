@@ -1,0 +1,9 @@
+base: ../grid.yaml
+run_id: qwen2vl_npo_img_lr5e-05_s0
+unlearn:
+  method: npo
+  modality: img
+  seed: 0
+  mode: grid
+train:
+  lr: 5.0e-05

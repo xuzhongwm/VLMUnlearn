@@ -1,0 +1,9 @@
+base: ../grid.yaml
+run_id: llava_ga_diff_img_lr1e-04_s0
+unlearn:
+  method: ga_diff
+  modality: img
+  seed: 0
+  mode: grid
+train:
+  lr: 0.0001

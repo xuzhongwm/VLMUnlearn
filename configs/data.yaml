@@ -1,0 +1,6 @@
+# Data build (scripts/prepare_data.py). Shared by all models.
+data:
+  forget_split: forget_10     # D9: 50 forget profiles; retain = the other 450 fictitious profiles
+  seed: 0                     # retain-eval sample, distractors, option order, pose choice, MMBench subset
+  n_retain_eval: 50           # held-out retain profiles used for retain accuracy (never trained on by GA_Diff)
+  n_utility: 500              # MMBench-EN dev subset

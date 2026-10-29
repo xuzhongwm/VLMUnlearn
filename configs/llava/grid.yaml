@@ -1,0 +1,28 @@
+# Unlearning grid + matched-forgetting selection (identical for every method/modality).
+base: [../data.yaml, ../models/llava.yaml]
+train:
+  batch_size: 4              # as MLLMU baselines
+  warmup_ratio: 0.0
+  max_epochs: 6              # linear decay over this horizon; early stop below
+  eval_every_epochs: 0.5     # each checkpoint is a grid point in the "steps" dimension
+  log_every: 20
+unlearn:
+  npo_beta: 0.4              # fixed, not tuned (MLLMU code default)
+  retain_weight: 1.0         # GA_Diff: forget ascent + retain descent, equal weight
+grid:
+  methods: [ga, ga_diff, npo]
+  modalities: [txt, img]     # unlearning-data modality
+  lrs: [2.0e-5, 5.0e-5, 1.0e-4]
+  seed: 0
+selection:
+  target_nd: 0.8             # in-modality normalised forget drop
+  tol: 0.1                   # |ND - target| <= tol => matched
+  retain_margin: 10.0        # feasible: paired retain acc drop <= 10 pp in BOTH modalities
+  stop_nd: 1.0               # early stop when in-modality ND >= 1.0
+  stop_retain_drop: 20.0     # ... or retain drop > 20 pp
+  extra_seeds: [1]
+debug_rows: 16
+debug_runs: [[ga, txt], [ga_diff, img], [npo, img]]   # --debug: one run per method, lowest lr
+debug_overrides:
+  train: {max_steps: 4, eval_every_steps: 2, log_every: 1}
+  selection: {retain_margin: 1000.0, stop_retain_drop: 1000.0}
