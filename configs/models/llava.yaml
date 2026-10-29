@@ -1,5 +1,6 @@
 # Phase B model (actual results).
 model:
+  role: primary          # primary confirmatory model
   name: llava
   family: llava
   id: llava-hf/llava-1.5-7b-hf

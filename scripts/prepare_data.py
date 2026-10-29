@@ -31,7 +31,12 @@ def main():
         t0 = time.time()
         raw = download(P["raw"], cfg["data"]["forget_split"], log=log)
         report = build(cfg, raw, out, log=log)
-        checks = check_data(out, log=log)
+        d = cfg["data"]
+        sizes = None if cfg["debug"] else {
+            "forget_calibration": d["n_forget_calibration"], "forget_confirmation": 50 - d["n_forget_calibration"],
+            "retain_unlearn": 450 - d["n_retain_calibration"] - d["n_retain_confirmation"],
+            "retain_calibration": d["n_retain_calibration"], "retain_confirmation": d["n_retain_confirmation"]}
+        checks = check_data(out, log=log, expected_sizes=sizes)
         if not checks["passed"]:
             raise RuntimeError(f"data sanity checks FAILED — see {out / 'sanity_data.json'}")
         mark_done(out, {"seconds": time.time() - t0, "counts": report["counts"]["splits"]})

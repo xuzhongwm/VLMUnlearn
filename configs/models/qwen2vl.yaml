@@ -1,5 +1,6 @@
 # Phase A model (pipeline development).
 model:
+  role: pipeline_check          # pipeline checks only; excluded from confirmatory evidence
   name: qwen2vl
   family: qwen2vl
   id: Qwen/Qwen2-VL-2B-Instruct

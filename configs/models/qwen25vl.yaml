@@ -1,0 +1,12 @@
+# Replication model (run only in the replication phase).
+model:
+  role: replication       # confirmatory replication of the primary result
+  name: qwen25vl
+  family: qwen25vl
+  id: Qwen/Qwen2.5-VL-7B-Instruct
+  min_pixels: 50176          # 224*224
+  max_pixels: 200704         # 448*448 -> at most 256 visual tokens
+lora: {r: 16, alpha: 16, dropout: 0.05, gradient_checkpointing: true}
+eval: {batch_size_img: 16, batch_size_txt: 64, max_per_group: null}
+debug_overrides:
+  eval: {max_per_group: 10}

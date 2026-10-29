@@ -1,28 +1,31 @@
-# Unlearning grid + matched-forgetting selection (identical for every method/modality).
+# Unlearning grid + checkpoint selection (PROTOCOL §4.3 as specified 2026-10-29; see DEVIATIONS.md).
 base: [../data.yaml, ../models/llava.yaml]
 train:
-  batch_size: 4              # as MLLMU baselines
+  batch_size: 4
   warmup_ratio: 0.0
-  max_epochs: 6              # linear decay over this horizon; early stop below
-  eval_every_epochs: 0.5     # each checkpoint is a grid point in the "steps" dimension
+  max_epochs: 6              # linear decay over this horizon; runs stop at the earliest eligible checkpoint
+  eval_every_epochs: 0.25    # calibration checkpoint eval frequency
   log_every: 20
 unlearn:
-  npo_beta: 0.4              # fixed, not tuned (MLLMU code default)
+  npo_beta: 0.4              # fixed, not tuned
   retain_weight: 1.0         # GA_Diff: forget ascent + retain descent, equal weight
 grid:
-  methods: [ga, ga_diff, npo]
-  modalities: [txt, img]     # unlearning-data modality
+  methods: [ga_diff, npo]    # core: GA_Diff (primary), NPO (second objective). GA code kept, not in core grid.
+  modalities: [txt, img]     # txt = primary condition; img = secondary (reverse direction / multimodal upper bound)
   lrs: [2.0e-5, 5.0e-5, 1.0e-4]
-  seed: 0
-selection:
-  target_nd: 0.8             # in-modality normalised forget drop
-  tol: 0.1                   # |ND - target| <= tol => matched
-  retain_margin: 10.0        # feasible: paired retain acc drop <= 10 pp in BOTH modalities
-  stop_nd: 1.0               # early stop when in-modality ND >= 1.0
-  stop_retain_drop: 20.0     # ... or retain drop > 20 pp
-  extra_seeds: [1]
+  seeds: [0, 1]
+selection:                   # calibration entities only, doubly-correct facts
+  window_lo: 0.30            # in-modality accuracy window
+  window_hi: 0.40
+  retain_margin: 0.10        # max retain drop (both modalities)
+  stop_retain_drop: 0.20     # abandon a run once retain drop exceeds this before reaching the window
+go:                          # PROTOCOL §5.1 as specified 2026-10-29
+  primary_method: ga_diff
+  primary_modality: txt
+  min_G: 0.10                # both seeds G >= 0.10 and paired entity-bootstrap 95% CI lower bound > 0
+  n_boot: 2000
 debug_rows: 16
-debug_runs: [[ga, txt], [ga_diff, img], [npo, img]]   # --debug: one run per method, lowest lr
+debug_runs: [[ga_diff, txt], [npo, img]]   # --debug: lowest lr, all seeds
 debug_overrides:
   train: {max_steps: 4, eval_every_steps: 2, log_every: 1}
-  selection: {retain_margin: 1000.0, stop_retain_drop: 1000.0}
+  selection: {window_lo: 0.0, window_hi: 1.0, retain_margin: 1.0, stop_retain_drop: 1.0}

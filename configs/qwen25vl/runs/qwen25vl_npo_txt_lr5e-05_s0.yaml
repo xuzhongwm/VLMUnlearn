@@ -1,9 +1,8 @@
 base: ../grid.yaml
-run_id: llava_ga_txt_lr5e-05_s0
+run_id: qwen25vl_npo_txt_lr5e-05_s0
 unlearn:
-  method: ga
+  method: npo
   modality: txt
   seed: 0
-  mode: grid
 train:
   lr: 5.0e-05

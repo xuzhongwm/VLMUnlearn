@@ -5,7 +5,9 @@
 - text-only inputs carry no image; image inputs carry exactly one
 - eval wording differs from training wording (paraphrase requirement)
 - no forget-image overlap with any other eval set; held-out poses differ from portraits
-- forget / retain-eval / retain-train ID sets are disjoint
+- PROTOCOL §4.2 splits: forget calibration/confirmation and retain unlearning/calibration/
+  confirmation are pairwise disjoint and of the configured sizes
+- correct answer positions are balanced by construction (per split and per field, max-min <= 1)
 """
 import collections
 from pathlib import Path
@@ -15,7 +17,7 @@ from .fields import supported
 from .rewrite import residue
 
 
-def check_data(processed, log=print) -> dict:
+def check_data(processed, log=print, expected_sizes=None) -> dict:
     P = Path(processed)
     splits = read_json(P / "splits.json")
     manifest = read_json(P / "images.json")
@@ -29,11 +31,18 @@ def check_data(processed, log=print) -> dict:
         checks.append({"check": name, "passed": bool(ok), "detail": detail})
         log(("PASS " if ok else "FAIL ") + name + ("" if ok or detail is None else f"  {detail}"))
 
-    # --- ID sets
-    f, re_, rt = set(splits["forget"]), set(splits["retain_eval"]), set(splits["retain_train"])
-    check("forget/retain_eval/retain_train disjoint", not (f & re_ or f & rt or re_ & rt))
-    check("unlearn_forget profiles == forget", {r["profile"] for r in uf} <= f and len(uf) > 0)
-    check("unlearn_retain profiles within retain_train", {r["profile"] for r in ur} <= rt and len(ur) > 0)
+    # --- ID sets (PROTOCOL §4.2)
+    names = ["forget_calibration", "forget_confirmation", "retain_unlearn", "retain_calibration", "retain_confirmation"]
+    sets = {k: set(splits[k]) for k in names}
+    overlap = [(a, b) for i, a in enumerate(names) for b in names[i + 1:] if sets[a] & sets[b]]
+    check("splits pairwise disjoint", not overlap, overlap)
+    sizes = {k: len(v) for k, v in sets.items()}
+    if expected_sizes:
+        check("split sizes as configured", sizes == expected_sizes, sizes)
+    f, re_ = set(splits["forget"]), sets["retain_calibration"] | sets["retain_confirmation"]
+    check("forget = calibration + confirmation (all unlearned)",
+          f == sets["forget_calibration"] | sets["forget_confirmation"] and {r["profile"] for r in uf} == f)
+    check("unlearn_retain profiles within retain_unlearn", {r["profile"] for r in ur} <= sets["retain_unlearn"] and len(ur) > 0)
 
     # --- paired items: same fact in every form
     paired = [r for k in ("forget", "retain") for r in items[k] if r["source"] == "paired"]
@@ -49,11 +58,21 @@ def check_data(processed, log=print) -> dict:
     check("paired items: answer is the fact stated in the FT answer", not bad, bad[:5])
     bad = [r["uid"] for r in paired if len(set(o.lower() for o in r["options"].values())) != 4]
     check("paired items: 4 distinct options", not bad, bad[:5])
-    letters = collections.Counter(r["answer"] for r in paired if r["modality"] == "txt")
-    n = sum(letters.values())
-    lo, hi = 0.25 - 3 * (0.1875 / n) ** 0.5, 0.25 + 3 * (0.1875 / n) ** 0.5  # +-3 sd of a fair draw
-    check("paired items: answer letters balanced (within 3 sd of uniform)",
-          all(lo <= letters.get(L, 0) / n <= hi for L in "ABCD"), dict(letters))
+    bad = {}
+    for key_fn, label in ((lambda r: (r["set"], r["split"]), "split"), (lambda r: (r["set"], r["split"], r["field"]), "field")):
+        groups = collections.defaultdict(collections.Counter)
+        for r in paired:
+            if r["modality"] == "txt":
+                groups[key_fn(r)][r["answer"]] += 1
+        for k, c in groups.items():
+            counts = [c.get(L, 0) for L in "ABCD"]
+            if max(counts) - min(counts) > 1 and sum(counts) >= 4:
+                bad["/".join(k)] = counts
+    totals = collections.Counter(r["answer"] for r in paired if r["modality"] == "txt")
+    check("paired items: correct positions balanced per split and per field (max-min <= 1)", not bad,
+          bad or dict(sorted(totals.items())))
+    bad = [r["uid"] for r in paired if r.get("split") not in ("calibration", "confirmation")]
+    check("paired items carry a calibration/confirmation split", not bad, bad[:5])
 
     # --- modality integrity of inputs
     all_items = [r for v in items.values() for r in v]

@@ -1,0 +1,8 @@
+base: ../grid.yaml
+run_id: qwen2vl_ga_diff_txt_lr5e-05_s1
+unlearn:
+  method: ga_diff
+  modality: txt
+  seed: 1
+train:
+  lr: 5.0e-05

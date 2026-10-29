@@ -179,6 +179,15 @@ class Qwen2VLAdapter(Adapter):
         return f"{answer}<|im_end|>"
 
 
+class Qwen25VLAdapter(Qwen2VLAdapter):
+    """Qwen2.5-VL: same chat format and processor interface as Qwen2-VL."""
+    family = "qwen25vl"
+
+    def _model_cls(self):
+        from transformers import Qwen2_5_VLForConditionalGeneration
+        return Qwen2_5_VLForConditionalGeneration
+
+
 class LlavaAdapter(Adapter):
     """LLaVA-1.5 conversation format as used by MLLMU-Bench: 'USER: <image>\\n{q}\\nASSISTANT: {a}'."""
     family = "llava"
@@ -199,7 +208,7 @@ class LlavaAdapter(Adapter):
         return f" {answer}{self.tok.eos_token}"
 
 
-ADAPTERS = {"qwen2vl": Qwen2VLAdapter, "llava": LlavaAdapter}
+ADAPTERS = {"qwen2vl": Qwen2VLAdapter, "qwen25vl": Qwen25VLAdapter, "llava": LlavaAdapter}
 
 
 def get_adapter(mcfg: dict, device=None) -> Adapter:

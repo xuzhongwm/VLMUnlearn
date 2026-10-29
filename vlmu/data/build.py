@@ -1,12 +1,14 @@
 """Build all processed data from the raw MLLMU-Bench / MMBench files.
 
 Outputs (in `processed/`):
-  splits.json              forget / retain_eval / retain_train / celeb IDs
+  splits.json              PROTOCOL §4.2 splits (frozen): forget = 20 calibration + 30 confirmation
+                           (all 50 unlearned); retain = 300 unlearning-retain + 50 calibration +
+                           100 confirmation; celeb IDs
   images/                  portraits, held-out poses, celebrity and MMBench images (raw bytes)
   images.json              path -> sha1, role, profile (for overlap checks)
   train_vanilla.jsonl      FT QA for all 500 profiles, image form (all QA) + text form (name-substituted)
   unlearn_forget.jsonl     forget-profile QA minus the name QA, both forms, same facts
-  unlearn_retain.jsonl     retain_train QA minus the name QA, both forms (GA_Diff retain data)
+  unlearn_retain.jsonl     unlearning-retain QA minus the name QA, both forms (GA_Diff retain data)
   items_{forget,retain,celeb,utility}.jsonl   MC eval items (one row per item x modality)
   build_report.json        counts, dropped items with reasons, paraphrase-distance check
   STAMP                    build id (used for local caching)
@@ -107,14 +109,26 @@ def build(cfg, raw_files: dict, out_dir, log=print) -> dict:
     assert retain == official_retain, "retain IDs differ from baseline_train_split retain_ids.json"
     no_mc = {r.ID for r in full.itertuples() if len(r.Classification_Task["Image_Textual_Questions"]) == 0}
     rng = np.random.default_rng(seed)
-    retain_eval = sorted(rng.choice([i for i in retain if i not in no_mc], dcfg["n_retain_eval"], replace=False))
-    retain_train = sorted(set(retain) - set(retain_eval))
+    fperm = [str(x) for x in rng.permutation(forget)]
+    n_fc = dcfg["n_forget_calibration"]
+    forget_cal, forget_conf = sorted(fperm[:n_fc]), sorted(fperm[n_fc:])
+    rperm = [str(x) for x in rng.permutation([i for i in retain if i not in no_mc])]
+    n_rc, n_rf = dcfg["n_retain_calibration"], dcfg["n_retain_confirmation"]
+    retain_cal, retain_conf = sorted(rperm[:n_rc]), sorted(rperm[n_rc:n_rc + n_rf])
+    retain_unlearn = sorted(set(retain) - set(retain_cal) - set(retain_conf))
+    assert len(retain_unlearn) == len(retain) - n_rc - n_rf
     celeb_ids = sorted(celeb["ID"])
     if debug:
-        forget, retain_eval, retain_train, celeb_ids = forget[:4], retain_eval[:4], retain_train[:10], celeb_ids[:4]
-    splits = {"forget": forget, "retain_eval": retain_eval, "retain_train": retain_train, "celeb": celeb_ids,
-              "no_official_mc": sorted(no_mc)}
+        forget_cal, forget_conf = forget_cal[:2], forget_conf[:2]
+        retain_cal, retain_conf, retain_unlearn = retain_cal[:2], retain_conf[:2], retain_unlearn[:10]
+        celeb_ids = celeb_ids[:4]
+    forget = sorted(forget_cal + forget_conf)
+    split_of = {**{i: "calibration" for i in forget_cal + retain_cal}, **{i: "confirmation" for i in forget_conf + retain_conf}}
+    splits = {"forget": forget, "forget_calibration": forget_cal, "forget_confirmation": forget_conf,
+              "retain_unlearn": retain_unlearn, "retain_calibration": retain_cal, "retain_confirmation": retain_conf,
+              "celeb": celeb_ids, "no_official_mc": sorted(no_mc), "seed": seed}
     atomic_write_json(out / "splits.json", splits)
+    retain_eval = retain_cal + retain_conf
 
     bios = {r.ID: json.loads(r.biography) for r in full.itertuples()}
     names = {i: b["Name"] for i, b in bios.items()}
@@ -137,7 +151,7 @@ def build(cfg, raw_files: dict, out_dir, log=print) -> dict:
         poses[pid] = store.put(imgs[k]["bytes"], "poses", pid, "pose", pid)
 
     # ---------------- FT / unlearning data ----------------
-    vanilla_profiles = all_ids if not debug else sorted(set(forget + retain_eval + retain_train))
+    vanilla_profiles = all_ids if not debug else sorted(set(forget + retain_eval + retain_unlearn))
     train_rows, rewrite_fail = [], 0
     unlearn = {"forget": [], "retain": []}
     for pid in vanilla_profiles:
@@ -158,7 +172,7 @@ def build(cfg, raw_files: dict, out_dir, log=print) -> dict:
             txt_row = {**base, "uid": f"ft/{fid}/txt", "form": "txt", "question": q, "answer": a, "image": None}
             train_rows.append(txt_row)
             # unlearning sets: only facts available in BOTH forms, name QA excluded
-            target = "forget" if pid in forget else "retain" if pid in retain_train else None
+            target = "forget" if pid in forget else "retain" if pid in retain_unlearn else None
             if target:
                 unlearn[target] += [img_row, txt_row]
     write_jsonl(out / "train_vanilla.jsonl", train_rows)
@@ -181,7 +195,10 @@ def build(cfg, raw_files: dict, out_dir, log=print) -> dict:
         pools[(field, format_class(field, v))].append((pid, v))
 
     def paired_items(set_name, ids):
-        rows = []
+        """Paired items with answer positions assigned by stratification: within each split,
+        fields are taken in a fixed order and profiles in a seeded random order, and the correct
+        position cycles A,B,C,D,A,... -> per-field and overall letter counts differ by <= 1."""
+        cands = []
         for pid in ids:
             for field in FIELDS:
                 if (pid, field) not in facts:
@@ -203,15 +220,25 @@ def build(cfg, raw_files: dict, out_dir, log=print) -> dict:
                 if len(distractors) < 3:
                     drop(kind="paired_item", profile=pid, field=field, reason="not_enough_distractors")
                     continue
-                opts = distractors + [ans]
-                order = r.permutation(4)
-                options = {LETTERS[k]: opts[o] for k, o in enumerate(order)}
-                answer = LETTERS[int(np.where(order == 3)[0][0])]
-                for modality, image in (("img", portraits[pid]), ("txt", None), ("pose", poses[pid])):
-                    rows.append({"uid": f"{pair_id}/{modality}", "pair_id": pair_id, "source": "paired",
-                                 "set": set_name, "profile": pid, "field": field, "modality": modality,
-                                 "question": render_stem(field, modality, names[pid]), "options": options,
-                                 "answer": answer, "image": image, "fact_answer": ans, "ft_answer": ft_ans})
+                cands.append({"pid": pid, "field": field, "pair_id": pair_id, "ans": ans, "ft_ans": ft_ans,
+                              "distractors": [distractors[k] for k in r.permutation(3)]})
+        rows = []
+        for split in ("calibration", "confirmation"):
+            group = [c for c in cands if split_of[c["pid"]] == split]
+            order = {p: k for k, p in enumerate(np.random.default_rng(stable_int(f"{set_name}/{split}") + seed)
+                                                .permutation(sorted({c["pid"] for c in group})))}
+            group.sort(key=lambda c: (list(FIELDS).index(c["field"]), order[c["pid"]]))
+            for k, c in enumerate(group):
+                pos = k % 4
+                opts = list(c["distractors"])
+                opts.insert(pos, c["ans"])
+                options = {LETTERS[j]: o for j, o in enumerate(opts)}
+                for modality, image in (("img", portraits[c["pid"]]), ("txt", None), ("pose", poses[c["pid"]])):
+                    rows.append({"uid": f"{c['pair_id']}/{modality}", "pair_id": c["pair_id"], "source": "paired",
+                                 "set": set_name, "split": split, "profile": c["pid"], "field": c["field"],
+                                 "modality": modality, "question": render_stem(c["field"], modality, names[c["pid"]]),
+                                 "options": options, "answer": LETTERS[pos], "image": image,
+                                 "fact_answer": c["ans"], "ft_answer": c["ft_ans"]})
         return rows
 
     # ---------------- official MLLMU MC (secondary) ----------------
@@ -226,8 +253,13 @@ def build(cfg, raw_files: dict, out_dir, log=print) -> dict:
             for modality, key in (("img", "Image_Textual_Questions"), ("txt", "Pure_Text_Questions")):
                 for k, q in enumerate(ct[key]):
                     options = {L: str(v) for L, v in dict(q["Options"]).items() if v is not None}
+                    if q["Correct_Answer"] not in options:
+                        drop(kind="official_item", profile=pid, reason="correct_answer_not_an_option",
+                             question=q["Question"], answer=q["Correct_Answer"])
+                        continue
                     rows.append({"uid": f"official/{set_name}/{pid}/{modality}/{k}", "pair_id": None,
-                                 "source": "official", "set": set_name, "profile": pid, "field": None,
+                                 "source": "official", "set": set_name, "split": split_of.get(pid, "all"),
+                                 "profile": pid, "field": None,
                                  "modality": modality, "question": q["Question"], "options": options,
                                  "answer": q["Correct_Answer"], "image": image if modality == "img" else None})
         return rows
@@ -246,7 +278,7 @@ def build(cfg, raw_files: dict, out_dir, log=print) -> dict:
         options = {L: str(getattr(r, L)) for L in LETTERS
                    if getattr(r, L) is not None and str(getattr(r, L)).lower() != "nan"}
         hint = "" if r.hint is None or str(r.hint).lower() == "nan" else f"{r.hint}\n"
-        util.append({"uid": f"mmbench/{r.index}", "pair_id": None, "source": "mmbench", "set": "utility",
+        util.append({"uid": f"mmbench/{r.index}", "pair_id": None, "source": "mmbench", "set": "utility", "split": "all",
                      "profile": None, "field": r.category, "modality": "img", "question": hint + r.question,
                      "options": options, "answer": r.answer,
                      "image": store.put(r.image["bytes"], "mmbench", str(r.index), "mmbench")})
@@ -272,7 +304,7 @@ def build(cfg, raw_files: dict, out_dir, log=print) -> dict:
         raise AssertionError(f"eval stem identical to an FT question: {para}")
 
     c = report["counts"]
-    c["splits"] = {k: len(v) for k, v in splits.items()}
+    c["splits"] = {k: len(v) for k, v in splits.items() if isinstance(v, list)}
     c["train_vanilla"] = collections.Counter(r["form"] for r in train_rows)
     c["unlearn_forget"] = collections.Counter(r["form"] for r in unlearn["forget"])
     c["unlearn_retain"] = collections.Counter(r["form"] for r in unlearn["retain"])

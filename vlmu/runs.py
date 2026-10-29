@@ -1,16 +1,20 @@
-"""Job orchestration: pretrained eval, vanilla fine-tune (+gate), unlearning runs (grid /
-rerun), selection at matched in-modality forgetting, and seed reruns."""
-import copy
+"""Job orchestration: pretrained eval, vanilla fine-tune (+gate, frozen doubly-correct set),
+unlearning runs with calibration-only checkpoint evals, checkpoint/lr selection, full evals.
+
+Selection (PROTOCOL §4.3 as specified in the 2026-10-29 instructions; see DEVIATIONS.md):
+  eligible checkpoint = in-modality accuracy on the calibration doubly-correct forget facts in
+  [window_lo, window_hi] AND retain drop <= retain_margin (calibration retain, doubly-correct);
+  per run, the EARLIEST eligible checkpoint is selected (training stops there).
+"""
+import collections
 import gc
 import glob
 from pathlib import Path
 
 import torch
-import yaml
 
 from .config import REPO, apply_overrides, deep_merge, load_yaml, localize
-from .evaluate import CHECKPOINT_SUITE, FULL_SUITE, load_items, score, summarize
-from .metrics import nd
+from .evaluate import CHECKPOINT_SUITE, FULL_SUITE, load_items, permutation_check, score, summarize
 from .models import get_adapter
 from .train import BatchPlan, Ctx, clear_resume, save_adapter, train
 from .utils import Logger, append_jsonl, atomic_write_json, is_done, mark_done, read_json, read_jsonl, \
@@ -28,6 +32,10 @@ def vanilla_adapter_dir(cfg):
 
 def vanilla_eval_dir(cfg):
     return model_dir(cfg) / "vanilla" / "full_eval"
+
+
+def dc_file(cfg):
+    return model_dir(cfg) / "vanilla" / "doubly_correct.json"
 
 
 def results_dir(cfg):
@@ -51,18 +59,23 @@ def free():
 
 # ---------------------------------------------------------------------------------------- eval
 def full_eval(cfg, adapter, model, processed, out_dir, log):
+    """All sets, both splits, plus the 3 extra cyclic shifts of every paired primary item."""
     out_dir = Path(out_dir)
     if is_done(out_dir):
         log(f"full eval already done: {out_dir}")
         return read_json(out_dir / "summary.json")
-    items = load_items(processed, FULL_SUITE, cfg["eval"].get("max_per_group"))
+    items = load_items(processed, FULL_SUITE, cfg["eval"].get("max_per_group"), shifts=True)
     res = score(adapter, model, items, processed, cfg["eval"], out_dir / "items.jsonl", log)
-    summ = summarize(res)
+    summ = {"all_items": summarize(res), "permutation_all_items": permutation_check(res)}
+    if dc_file(cfg).exists():
+        dc = set(read_json(dc_file(cfg))["pair_ids"])
+        summ["doubly_correct"] = summarize(res, dc)
+        summ["permutation_doubly_correct"] = permutation_check(res, dc)
     atomic_write_json(out_dir / "summary.json", summ)
     mark_done(out_dir)
-    for k, v in summ.items():
-        log(f"  {k:28s} acc={v['acc']:5.1f}  n={v['n']:4d}  chance={v['chance']:.0f}  "
-            f"p_letters={v['p_letters']:.2f}")
+    for k, v in summ["all_items"].items():
+        if "/shift" not in k:
+            log(f"  {k:40s} acc={v['acc']:.3f} n={v['n']:4d} margin={v['margin']:+.2f} p_letters={v['p_letters']:.2f}")
     return summ
 
 
@@ -78,6 +91,37 @@ def run_pretrained_eval(cfg):
 
 
 # ---------------------------------------------------------------------------------------- vanilla
+def freeze_doubly_correct(cfg, results, log):
+    """Facts the vanilla answers correctly in BOTH primary forms (training portrait + text, original
+    option order). Written once per model and never overwritten (frozen before any unlearning)."""
+    f = dc_file(cfg)
+    by_pair = collections.defaultdict(dict)
+    for r in results:
+        if r["source"] == "paired" and r["shift"] == 0 and r["modality"] in ("img", "txt"):
+            by_pair[r["pair_id"]][r["modality"]] = r
+    dc = sorted(p for p, m in by_pair.items() if len(m) == 2 and m["img"]["correct"] and m["txt"]["correct"])
+    cov = {"by_split": collections.defaultdict(lambda: [0, 0]), "by_entity": collections.defaultdict(lambda: [0, 0]),
+           "by_attribute": collections.defaultdict(lambda: [0, 0])}
+    dcs = set(dc)
+    for p, m in by_pair.items():
+        r = m.get("txt") or m.get("img")
+        for key, k in (("by_split", f"{r['set']}/{r['split']}"), ("by_entity", f"{r['set']}/{r['split']}/{r['profile']}"),
+                       ("by_attribute", f"{r['set']}/{r['split']}/{r['field']}")):
+            cov[key][k][1] += 1
+            cov[key][k][0] += int(p in dcs)
+    out = {"pair_ids": dc, "definition": "vanilla correct on img (training portrait) AND txt, original option order",
+           "coverage": {k: {kk: {"n_doubly_correct": a, "n_pairs": b, "coverage": round(a / b, 4)}
+                            for kk, (a, b) in sorted(v.items())} for k, v in cov.items()}}
+    if f.exists():
+        old = read_json(f)
+        if old["pair_ids"] != dc:
+            raise RuntimeError(f"doubly-correct set already frozen at {f} and differs from this vanilla eval")
+        return old
+    atomic_write_json(f, out)
+    log("doubly-correct coverage:", {k: v["coverage"] for k, v in out["coverage"]["by_split"].items()})
+    return out
+
+
 def run_vanilla(cfg):
     run_dir = model_dir(cfg) / "vanilla"
     log = Logger(run_dir / "log.txt")
@@ -104,13 +148,13 @@ def run_vanilla(cfg):
             ckpts = set(range(save_every, total, save_every)) | epoch_steps | {total}
             log(f"vanilla FT: {len(rows)} rows, {plan.steps_per_epoch} steps/epoch, {total} steps")
             model = adapter.add_lora(adapter.load_model(), cfg["lora"], tcfg["seed"])
-            ckpt_suite = load_items(processed, CHECKPOINT_SUITE, cfg["eval"].get("max_per_group"))
+            ckpt_items = load_items(processed, CHECKPOINT_SUITE, cfg["eval"].get("max_per_group"))
 
             def on_ckpt(step):
                 if step in epoch_steps or step == total:
                     out = run_dir / "evals" / f"step{step}.jsonl"
-                    summ = summarize(score(adapter, model, ckpt_suite, processed, cfg["eval"], out, log))
-                    log(f"step {step} " + " ".join(f"{k}={v['acc']:.1f}" for k, v in summ.items()))
+                    summ = summarize(score(adapter, model, ckpt_items, processed, cfg["eval"], out, log))
+                    log(f"step {step} " + " ".join(f"{k}={v['acc']:.3f}" for k, v in summ.items()))
                     append_jsonl(run_dir / "checkpoints.jsonl", [{"step": step, **{k: v["acc"] for k, v in summ.items()}}])
                 return {}
 
@@ -122,11 +166,16 @@ def run_vanilla(cfg):
             free()
         # Evaluate the merged model exactly as unlearning runs will load it.
         model = adapter.load_model(out_adapter)
-        summ = full_eval(cfg, adapter, model, processed, vanilla_eval_dir(cfg), log)
+        full_eval(cfg, adapter, model, processed, vanilla_eval_dir(cfg), log)
+        res = read_jsonl(vanilla_eval_dir(cfg) / "items.jsonl")
+        prim = [r for r in res if r["set"] == "forget" and r["source"] == "paired" and r["shift"] == 0]
+        accs = {m: float(sum(r["correct"] for r in prim if r["modality"] == m) /
+                         max(1, sum(r["modality"] == m for r in prim))) for m in ("img", "txt")}
         g = cfg["gate"]["min_forget_acc"]
-        accs = {m: summ[f"forget/paired/{m}"]["acc"] for m in ("img", "txt")}
-        gate = {"passed": all(a >= g for a in accs.values()), "threshold": g, "forget_paired_acc": accs,
-                "retain_paired_acc": {m: summ[f"retain/paired/{m}"]["acc"] for m in ("img", "txt")}}
+        gate = {"passed": all(a >= g for a in accs.values()), "threshold": g,
+                "forget_paired_acc_primary_forms": accs, "n_entities": len({r["profile"] for r in prim})}
+        dc = freeze_doubly_correct(cfg, res, log)
+        gate["doubly_correct_coverage"] = {k: v["coverage"] for k, v in dc["coverage"]["by_split"].items()}
         atomic_write_json(run_dir / "gate.json", gate)
         log(f"GATE {'PASSED' if gate['passed'] else 'FAILED'}: {gate}")
         clear_resume(run_dir)
@@ -135,53 +184,63 @@ def run_vanilla(cfg):
 
 def require_gate(cfg, log):
     gate_file = model_dir(cfg) / "vanilla" / "gate.json"
-    if not gate_file.exists():
-        raise RuntimeError(f"no vanilla model yet ({gate_file}); run scripts/finetune_vanilla.py first")
+    if not gate_file.exists() or not dc_file(cfg).exists():
+        raise RuntimeError(f"no vanilla model / doubly-correct set yet ({gate_file}); run scripts/finetune_vanilla.py first")
     gate = read_json(gate_file)
     if not gate["passed"]:
         if cfg["debug"] or cfg.get("allow_failed_gate"):
             log(f"WARNING: vanilla gate failed {gate} — continuing (debug/allow_failed_gate)")
         else:
-            raise RuntimeError(f"vanilla gate failed: {gate}. Unlearning is blocked (D2).")
-    return read_json(vanilla_eval_dir(cfg) / "summary.json")
+            raise RuntimeError(f"vanilla gate failed: {gate}. Unlearning is blocked.")
+    return set(read_json(dc_file(cfg))["pair_ids"])
 
 
 # ---------------------------------------------------------------------------------------- unlearning
-def checkpoint_record(cfg, summ, vanilla, step, spe):
+def checkpoint_record(cfg, summ, step, spe):
+    """Calibration metrics on the doubly-correct set (vanilla accuracy = 1 there by construction)."""
     u, s = cfg["unlearn"], cfg["selection"]
     rec = {"run_id": cfg["run_id"], "method": u["method"], "modality": u["modality"], "lr": cfg["train"]["lr"],
            "seed": u["seed"], "step": step, "epoch": round(step / spe, 3)}
     for set_name in ("forget", "retain"):
         for m in ("img", "txt"):
-            k = f"{set_name}/paired/{m}"
-            rec[f"{set_name}_{m}_acc"] = summ[k]["acc"]
-            rec[f"{set_name}_{m}_vanilla"] = vanilla[k]["acc"]
-            rec[f"{set_name}_{m}_p_letters"] = summ[k]["p_letters"]
+            g = summ.get(f"{set_name}/calibration/paired/{m}")
+            rec[f"{set_name}_cal_{m}_acc"] = g["acc"] if g else None
+            rec[f"{set_name}_cal_{m}_n"] = g["n"] if g else 0
+            rec[f"{set_name}_cal_{m}_margin"] = g["margin"] if g else None
+    missing = [k for k in rec if k.endswith("_acc") and rec[k] is None]
+    if missing:
+        raise RuntimeError(f"no doubly-correct calibration items for {missing}")
     for m in ("img", "txt"):
-        rec[f"nd_{m}"] = nd(vanilla[f"forget/paired/{m}"]["acc"], summ[f"forget/paired/{m}"]["acc"])
-        rec[f"retain_drop_{m}"] = vanilla[f"retain/paired/{m}"]["acc"] - summ[f"retain/paired/{m}"]["acc"]
-    rec["nd_in"] = rec[f"nd_{u['modality']}"]
-    rec["feasible"] = max(rec["retain_drop_img"], rec["retain_drop_txt"]) <= s["retain_margin"]
-    rec["distance"] = abs(rec["nd_in"] - s["target_nd"])
-    rec["matched"] = rec["feasible"] and rec["distance"] <= s["tol"]
-    rec["stop"] = rec["nd_in"] >= s["stop_nd"] or max(rec["retain_drop_img"], rec["retain_drop_txt"]) > s["stop_retain_drop"]
+        rec[f"retain_drop_{m}"] = 1.0 - rec[f"retain_cal_{m}_acc"]
+    rec["acc_in"] = rec[f"forget_cal_{u['modality']}_acc"]
+    rec["retain_drop_max"] = max(rec["retain_drop_img"], rec["retain_drop_txt"])
+    rec["in_window"] = s["window_lo"] <= rec["acc_in"] <= s["window_hi"]
+    rec["eligible"] = rec["in_window"] and rec["retain_drop_max"] <= s["retain_margin"]
+    if rec["eligible"]:
+        rec["stop"], rec["stop_reason"] = True, "earliest_eligible"
+    elif rec["acc_in"] < s["window_lo"]:
+        rec["stop"], rec["stop_reason"] = True, "passed_window_without_eligible_checkpoint"
+    elif rec["retain_drop_max"] > s["stop_retain_drop"]:
+        rec["stop"], rec["stop_reason"] = True, "retain_drop_exceeded"
+    else:
+        rec["stop"], rec["stop_reason"] = False, None
     return rec
 
 
 def run_unlearn(cfg):
-    """mode 'grid': checkpoint evals, keep the closest feasible adapter, early stop.
-    mode 'rerun': train to unlearn.stop_at_step, save adapter, full eval."""
+    """Fresh LoRA on the frozen vanilla; checkpoint evals on calibration entities only; stops at
+    the earliest eligible checkpoint and saves its adapter (selected_adapter/)."""
     u = cfg["unlearn"]
     run_dir = model_dir(cfg) / "unlearn" / cfg["run_id"]
     log = Logger(run_dir / "log.txt")
     if is_done(run_dir):
         log(f"{cfg['run_id']} already DONE")
         return
-    with tracked_run(results_dir(cfg), run_dir, cfg["run_id"], f"unlearn_{u.get('mode', 'grid')}"):
+    with tracked_run(results_dir(cfg), run_dir, cfg["run_id"], "unlearn"):
         atomic_write_json(run_dir / "config.json", cfg)
         processed = processed_dir(cfg, log)
-        vanilla = require_gate(cfg, log)
-        tcfg, mode = cfg["train"], u.get("mode", "grid")
+        dc = require_gate(cfg, log)
+        tcfg = cfg["train"]
         seed_all(u["seed"])
         adapter = get_adapter(cfg["model"])
         model = adapter.add_lora(adapter.load_model(vanilla_adapter_dir(cfg)), cfg["lora"], u["seed"])
@@ -195,42 +254,35 @@ def run_unlearn(cfg):
         total = tcfg.get("max_steps") or spe * tcfg["max_epochs"]
         every = tcfg.get("eval_every_steps") or max(1, round(spe * tcfg["eval_every_epochs"]))
         ckpts = set(range(every, total + 1, every)) | {total}
-        stop_at = u.get("stop_at_step") or total
-        log(f"{cfg['run_id']}: {len(forget)} forget rows, {spe} steps/epoch, schedule {total} steps, "
-            f"stop_at {stop_at}, mode {mode}")
-        ckpt_items = load_items(processed, CHECKPOINT_SUITE, cfg["eval"].get("max_per_group"))
+        log(f"{cfg['run_id']}: {len(forget)} forget rows, {spe} steps/epoch, schedule {total} steps, eval every {every}")
+        ckpt_items = load_items(processed, CHECKPOINT_SUITE, cfg["eval"].get("max_per_group"), pair_ids=dc)
+        if not ckpt_items:
+            raise RuntimeError("no doubly-correct calibration items to evaluate")
         records = {r["step"]: r for r in read_jsonl(run_dir / "checkpoints.jsonl")}
 
         def on_ckpt(step):
-            if mode != "grid":
-                return {}
             if step in records:
                 return {"stop": records[step]["stop"]}
             res = score(adapter, model, ckpt_items, processed, cfg["eval"], run_dir / "evals" / f"step{step}.jsonl", log)
-            rec = checkpoint_record(cfg, summarize(res), vanilla, step, spe)
-            best_f = run_dir / "best.json"
-            best = read_json(best_f) if best_f.exists() else None
-            if rec["feasible"] and (best is None or rec["distance"] < best["distance"]):
-                save_adapter(model, run_dir / "best_adapter")
-                atomic_write_json(best_f, rec)
-                rec["saved_adapter"] = True
+            rec = checkpoint_record(cfg, summarize(res), step, spe)
+            if rec["eligible"]:
+                save_adapter(model, run_dir / "selected_adapter")
+                atomic_write_json(run_dir / "selected.json", rec)
             append_jsonl(run_dir / "checkpoints.jsonl", [rec])
             records[step] = rec
-            log(f"ckpt step {step}: ND img={rec['nd_img']:.2f} txt={rec['nd_txt']:.2f} | retain drop "
-                f"img={rec['retain_drop_img']:.1f} txt={rec['retain_drop_txt']:.1f} | feasible={rec['feasible']} "
-                f"stop={rec['stop']}")
+            log(f"ckpt step {step}: forget-cal acc img={rec['forget_cal_img_acc']:.3f} txt={rec['forget_cal_txt_acc']:.3f}"
+                f" | retain drop img={rec['retain_drop_img']:.3f} txt={rec['retain_drop_txt']:.3f}"
+                f" | eligible={rec['eligible']} stop={rec['stop_reason']}")
             return {"stop": rec["stop"]}
 
         ctx = Ctx(model=model, adapter=adapter, cfg=cfg, run_dir=run_dir, plan=plan, retain_plan=rplan,
                   image_root=processed, loss=u["method"], seed=u["seed"], ref_cache={} if u["method"] == "npo" else None)
-        final = train(ctx, total, stop_at, ckpts, on_ckpt, log)
-        if mode == "rerun":
-            if final != stop_at:
-                raise RuntimeError(f"rerun stopped at {final}, expected {stop_at}")
-            save_adapter(model, run_dir / "final_adapter")
-            full_eval(cfg, adapter, model, processed, run_dir / "full_eval", log)
+        final = train(ctx, total, total, ckpts, on_ckpt, log)
+        last = records[max(records)] if records else None
+        status = "eligible" if (run_dir / "selected.json").exists() else \
+            (last["stop_reason"] if last and last["stop_reason"] else "window_not_reached")
         clear_resume(run_dir)
-        mark_done(run_dir, {"final_step": final})
+        mark_done(run_dir, {"final_step": final, "status": status})
         model = ctx = None  # release before free()
         free()
 
@@ -244,7 +296,7 @@ def eval_adapter(cfg, adapter_dir, out_dir, log):
     adapter = get_adapter(cfg["model"])
     model = PeftModel.from_pretrained(adapter.load_model(vanilla_adapter_dir(cfg)), str(adapter_dir))
     summ = full_eval(cfg, adapter, model, processed, out_dir, log)
-    del model
+    model = None
     free()
     return summ
 
@@ -266,47 +318,41 @@ def load_run_cfg(path, base_cfg):
     return cfg
 
 
+def run_status(rd):
+    if not is_done(rd):
+        return {"status": "incomplete"}
+    done = read_json(rd / "DONE")
+    out = {"status": done.get("status"), "final_step": done.get("final_step")}
+    if (rd / "selected.json").exists():
+        sel = read_json(rd / "selected.json")
+        out.update({k: sel[k] for k in ("step", "epoch", "acc_in", "forget_cal_img_acc", "forget_cal_txt_acc",
+                                        "retain_drop_img", "retain_drop_txt")})
+    return out
+
+
 def select(cfg, log):
-    """Matched-forgetting selection over all seed-0 grid checkpoints (same rule everywhere)."""
-    s = cfg["selection"]
-    recs, incomplete = [], []
+    """Per (method, unlearning modality): the lowest lr whose runs have an eligible checkpoint in
+    EVERY seed (calibration only); for each seed, that run's earliest eligible checkpoint.
+    All runs and their statuses are reported (ineligible runs are not dropped)."""
+    seeds = cfg["grid"]["seeds"]
+    runs, recs = {}, []
     for path in run_configs(cfg["model"]["name"]):
         rc = load_run_cfg(path, cfg)
         rd = model_dir(rc) / "unlearn" / rc["run_id"]
-        if not is_done(rd):
-            incomplete.append(rc["run_id"])
+        u = rc["unlearn"]
+        runs[(u["method"], u["modality"], rc["train"]["lr"], u["seed"])] = {"run_id": rc["run_id"], "dir": str(rd),
+                                                                            **run_status(rd)}
         recs += read_jsonl(rd / "checkpoints.jsonl")
-    out = {"rule": s, "incomplete_runs": incomplete, "cells": {}}
+    out = {"rule": cfg["selection"], "seeds": seeds, "runs": {v["run_id"]: v for v in runs.values()}, "cells": {}}
     for method in cfg["grid"]["methods"]:
         for modality in cfg["grid"]["modalities"]:
-            cand = [r for r in recs if r["method"] == method and r["modality"] == modality and r["seed"] == cfg["grid"]["seed"]]
-            feas = [r for r in cand if r["feasible"]]
             key = f"{method}/{modality}"
-            if not feas:
-                out["cells"][key] = {"status": "no_feasible_checkpoint", "n_checkpoints": len(cand)}
+            lrs = sorted({k[2] for k in runs if k[0] == method and k[1] == modality})
+            chosen = next((lr for lr in lrs if all(runs.get((method, modality, lr, s), {}).get("status") == "eligible"
+                                                   for s in seeds)), None)
+            if chosen is None:
+                out["cells"][key] = {"status": "no_lr_eligible_in_all_seeds"}
                 continue
-            best = min(feas, key=lambda r: (r["distance"], r["step"], r["lr"]))
-            out["cells"][key] = {"status": "matched" if best["matched"] else "unmatched", "n_checkpoints": len(cand),
-                                 "n_feasible": len(feas), **{k: best[k] for k in ("run_id", "lr", "step", "epoch",
-                                                                                   "nd_in", "nd_img", "nd_txt", "distance",
-                                                                                   "retain_drop_img", "retain_drop_txt")}}
+            out["cells"][key] = {"status": "selected", "lr": chosen,
+                                 "seeds": {str(s): runs[(method, modality, chosen, s)] for s in seeds}}
     return out, recs
-
-
-def rerun_cfg(cfg, cell, method, modality, seed):
-    rc = load_run_cfg(next(p for p in run_configs(cfg["model"]["name"]) if Path(p).stem == cell["run_id"]), cfg)
-    rc = copy.deepcopy(rc)
-    rc["run_id"] = f"{cell['run_id'].rsplit('_s', 1)[0]}_s{seed}_step{cell['step']}"
-    rc["unlearn"].update({"seed": seed, "stop_at_step": cell["step"], "mode": "rerun", "method": method,
-                          "modality": modality})
-    return rc
-
-
-def save_generated_cfg(cfg, rc):
-    """Generated (seed-rerun) configs are saved next to the results so every run stays fully defined."""
-    out = results_dir(cfg) / "generated_configs" / f"{rc['run_id']}.yaml"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    keep = {k: v for k, v in rc.items() if k not in ("paths",)}
-    out.write_text(yaml.safe_dump(keep, sort_keys=False))
-    return out
-

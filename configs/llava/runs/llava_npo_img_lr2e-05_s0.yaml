@@ -4,6 +4,5 @@ unlearn:
   method: npo
   modality: img
   seed: 0
-  mode: grid
 train:
   lr: 2.0e-05

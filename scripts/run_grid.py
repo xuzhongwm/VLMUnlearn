@@ -1,4 +1,4 @@
-"""Run every grid run in configs/<model>/runs/ (seed 0), skipping DONE runs. A failed run is
+"""Run every grid run in configs/<model>/runs/ (all methods, modalities, lrs, seeds), skipping DONE runs. A failed run is
 logged (FAILED marker + results/run_log.csv) and the grid continues; exit code is non-zero if
 any run failed. Safe to re-invoke after a disconnect.
 

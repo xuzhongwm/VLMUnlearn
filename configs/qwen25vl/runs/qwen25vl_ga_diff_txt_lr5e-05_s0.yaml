@@ -1,9 +1,8 @@
 base: ../grid.yaml
-run_id: qwen2vl_ga_txt_lr5e-05_s0
+run_id: qwen25vl_ga_diff_txt_lr5e-05_s0
 unlearn:
-  method: ga
+  method: ga_diff
   modality: txt
   seed: 0
-  mode: grid
 train:
   lr: 5.0e-05

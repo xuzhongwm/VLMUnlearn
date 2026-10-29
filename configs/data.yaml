@@ -1,6 +1,9 @@
 # Data build (scripts/prepare_data.py). Shared by all models.
 data:
-  forget_split: forget_10     # D9: 50 forget profiles; retain = the other 450 fictitious profiles
-  seed: 0                     # retain-eval sample, distractors, option order, pose choice, MMBench subset
-  n_retain_eval: 50           # held-out retain profiles used for retain accuracy (never trained on by GA_Diff)
+  forget_split: forget_10     # 50 forget profiles, all unlearned; retain = the other 450 fictitious profiles
+  seed: 0                     # splits, distractors, answer positions, pose choice, MMBench subset
+  # PROTOCOL §4.2 splits (frozen in splits.json). All selection uses calibration entities only.
+  n_forget_calibration: 20    # forget: 20 calibration / 30 confirmation
+  n_retain_calibration: 50    # retain: 50 calibration / 100 confirmation / 300 unlearning-retain (GA_Diff)
+  n_retain_confirmation: 100
   n_utility: 500              # MMBench-EN dev subset

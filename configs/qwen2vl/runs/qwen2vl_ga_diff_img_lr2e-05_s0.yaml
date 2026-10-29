@@ -4,6 +4,5 @@ unlearn:
   method: ga_diff
   modality: img
   seed: 0
-  mode: grid
 train:
   lr: 2.0e-05

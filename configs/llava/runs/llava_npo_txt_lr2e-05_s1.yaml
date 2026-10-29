@@ -1,0 +1,8 @@
+base: ../grid.yaml
+run_id: llava_npo_txt_lr2e-05_s1
+unlearn:
+  method: npo
+  modality: txt
+  seed: 1
+train:
+  lr: 2.0e-05
