@@ -29,13 +29,17 @@ this order. **Cells 4–9 are real GPU runs; start them only after approval.**
 | 3 | Smoke test | every job below with `--debug` (~20 samples), including Milestone J | ~10 min | ~15 min (first 14 GB weight download) |
 | 4 | Pretrained baseline | base model, no FT, full eval (priors) | ~5 min | ~12 min |
 | 5 | Vanilla FT + gate | LoRA FT on both forms, 3 epochs; full eval; gate; freeze the doubly-correct set | ~0.8 h | ~2.5 h |
-| 6 | Milestone J | hook checks (i)–(iii) with a trained adapter on the real model | ~3 min | ~5 min |
+| 6 | Milestone J | hook checks (i)–(iii) + tool tests J1–J6 with a trained adapter on the real model, in float32 (also as `pytest tests/`) | not yet measured | not yet measured |
+| 6b | Pilot + checkpoint B | one cell (NPO + retain NLL, txt, lr 5e-5, seed 0), up to 6 epochs, LoRA + scores at every calibration checkpoint | not yet measured | not yet measured |
+| 6c | Logit-lens curves | `layer_logit_diff` on the first checkpoint that passed B; the H2 vs H1/H1′ decision is made by a person | not yet measured | not yet measured |
 | 7 | Unlearning grid | 24 runs (GA_Diff, NPO × txt/img × 3 lr × 2 seeds); each stops at its earliest eligible checkpoint | ~2–3 h | ~6–9 h |
 | 8 | Selection + full evals | calibration-only selection; full evals of ≤ 8 selected checkpoints (4 option shifts each) | ~0.5 h | ~1.5 h |
 | 9 | Aggregate + sanity | transfer table, G table, figure, verdict, sanity report | 1 min | 1 min |
 | | **total** | | **≈ 4–5 h** | **≈ 11–14 h** |
 
 **Notes on order and runtime:**
+- Order (research.md, Section 6): 4 → 5 (checkpoint A) → 6 → 6b (checkpoint B) → 6c → decision → 7–9.
+- Full evals (cells 5 and 8) now also score open-ended answers (greedy generation of up to 32 tokens on every paired fact, both forms). This adds time that the estimates above do not include yet.
 - `qwen25vl` (replication phase only) costs about the same as `llava`, or a little less, because it uses fewer visual tokens.
 - The grid time depends on how quickly each run reaches the accuracy window. The lowest lr may run the full 6 epochs, which is the upper end of each range.
 - The smoke-test log prints the measured `s/step` per job, so the estimates can be recalibrated.

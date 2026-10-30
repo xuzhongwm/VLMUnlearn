@@ -34,6 +34,13 @@ REFERENTS = {
     # txt: filled with the profile name
 }
 
+def referent_from_stem(field: str, question: str):
+    """The referent filled into a paired stem (the profile name in text items), or None."""
+    pat = re.escape(FIELDS[field]["stem"]).replace(re.escape("{Rp}"), "(?P<r>.+?)'s").replace(re.escape("{R}"), "(?P<r>.+?)")
+    m = re.fullmatch(pat, question)
+    return m.group("r") if m else None
+
+
 _NA = re.compile(r"^\s*(n/?a|none|unknown|not applicable)\b", re.I)
 
 

@@ -27,7 +27,9 @@ class Adapter:
     def __init__(self, mcfg: dict, device=None):
         self.cfg = mcfg
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-        self.dtype = torch.bfloat16 if self.device.type == "cuda" else torch.float32
+        # bf16 on GPU unless mcfg['dtype'] says otherwise (Milestone J runs in float32)
+        self.dtype = getattr(torch, mcfg["dtype"]) if mcfg.get("dtype") else \
+            torch.bfloat16 if self.device.type == "cuda" else torch.float32
         self.processor = self._load_processor()
         self.tok = self.processor.tokenizer
         self.letter_ids = {L: self._letter_id(L) for L in LETTERS}
@@ -120,9 +122,18 @@ class Adapter:
         b["labels"] = labels
         return self.to_device(b)
 
+    def mc_text(self, row, has_image):
+        return self.prompt(format_mc(row["question"], row["options"]), has_image)
+
     def encode_mc(self, rows, image_root):
         images = self._images(rows, image_root)
-        texts = [self.prompt(format_mc(r["question"], r["options"]), bool(images)) for r in rows]
+        texts = [self.mc_text(r, bool(images)) for r in rows]
+        return self.to_device(self._process(texts, images, "left"))
+
+    def encode_open(self, rows, image_root):
+        """Left-padded open-ended prompts (question stem only, no options) for generation."""
+        images = self._images(rows, image_root)
+        texts = [self.prompt(r["question"], bool(images)) for r in rows]
         return self.to_device(self._process(texts, images, "left"))
 
     def _letter_id(self, L):
@@ -132,6 +143,11 @@ class Adapter:
         return full[-1]
 
     # ---- forward helpers ----------------------------------------------------------------
+    def autocast(self):
+        """Mixed precision on GPU in a half dtype; a no-op in float32."""
+        return torch.autocast(device_type=self.device.type, dtype=self.dtype,
+                              enabled=self.device.type == "cuda" and self.dtype != torch.float32)
+
     def forward(self, model, batch, last_only=False):
         kw = {k: v for k, v in batch.items() if k != "labels"}
         kw["use_cache"] = False
@@ -149,6 +165,13 @@ class Adapter:
         rows = mask.nonzero()[:, 0]
         per_sample = torch.zeros(labels.shape[0], device=tok_lp.device, dtype=tok_lp.dtype).index_add(0, rows, tok_lp)
         return tok_lp, per_sample, mask.sum(1)
+
+    @torch.no_grad()
+    def generate(self, model, batch, max_new_tokens):
+        """Greedy continuation of a left-padded batch; returns the decoded new text per row."""
+        out = model.generate(**{k: v for k, v in batch.items() if k != "labels"}, max_new_tokens=max_new_tokens,
+                             do_sample=False, num_beams=1, use_cache=True, pad_token_id=self.tok.pad_token_id)
+        return self.tok.batch_decode(out[:, batch["input_ids"].shape[1]:], skip_special_tokens=True)
 
     @torch.no_grad()
     def letter_scores(self, model, batch):

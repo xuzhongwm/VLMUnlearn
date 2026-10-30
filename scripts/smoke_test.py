@@ -41,6 +41,8 @@ def main():
         ("eval_pretrained", ["scripts/eval_pretrained.py", "--config", f"configs/{m}/vanilla.yaml"]),
         ("finetune_vanilla", ["scripts/finetune_vanilla.py", "--config", f"configs/{m}/vanilla.yaml"]),
         ("check_hooks", ["scripts/check_hooks.py", "--config", f"configs/{m}/grid.yaml"]),
+        ("pilot", ["scripts/pilot.py", "--config", f"configs/{m}/pilot.yaml"]),
+        ("layer_logit_diff", ["scripts/mech_layer_logit_diff.py", "--config", f"configs/{m}/pilot.yaml"]),
         ("run_grid", ["scripts/run_grid.py", "--config", f"configs/{m}/grid.yaml"]),
         ("select_and_eval", ["scripts/select_and_eval.py", "--config", f"configs/{m}/grid.yaml"]),
         ("aggregate", ["scripts/aggregate.py", "--config", f"configs/{m}/grid.yaml"]),

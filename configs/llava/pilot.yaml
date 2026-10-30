@@ -1,0 +1,15 @@
+# Single-cell pilot (research.md Section 6 step 1): text-only unlearning (T->M), NPO + retain NLL,
+# one lr, one seed, trained for pilot.epochs without the window stop. Checkpoint B is read from
+# its calibration checkpoints; the mech analyses then load ckpt/step<N>/adapter.
+# Starting model: the repo's own vanilla fine-tune (both forms; LoRA on the LM linear layers, vision tower
+# and projector frozen). TODO(confirm): or Kyomin/unlearning_target (see DEVIATIONS.md DEV-007).
+base: grid.yaml
+run_id: llava_pilot_npo_rt_txt_lr5e-05_s0
+unlearn: {method: npo_rt, modality: txt, seed: 0}   # npo_rt = NPO (beta = unlearn.npo_beta) + retain NLL (unlearn.retain_weight)
+train: {lr: 5.0e-5}          # TODO(confirm): middle of the grid's lrs; not tuned
+pilot:
+  epochs: 6                  # = grid max_epochs; stops early only once the retain drop exceeds selection.stop_retain_drop
+  checkpoint_b:              # TODO(confirm): "clearly" is not defined numerically; these reuse the protocol's F/H values
+    max_acc_in: 0.40         # in-modality forget accuracy dropped to <= window_hi (doubly-correct calibration facts)
+    min_gap: 0.10            # other modality minus in-modality >= min_G
+    retain_margin: 0.10      # retain drop (max over modalities) <= retain_margin

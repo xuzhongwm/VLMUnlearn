@@ -76,6 +76,26 @@ accuracy. It is reported with G_reverse = Acc_T^U − Acc_I^U.
 - **Official MC item dropped:** profile 028 has one question whose `Correct_Answer` ("None of the
   above") is not among its options. Logged in `build_report.json`.
 
+### DEV-007 — 2026-10-29 — update from the project-update note (decided by: PI; implementation choices by: implementer)
+- **Order:** a single-cell pilot with checkpoints A and B and the logit-lens curves come before the full grid
+  (`scripts/pilot.py`, `scripts/mech_layer_logit_diff.py`, notebook cells 6b/6c). The grid itself is unchanged.
+- **Pilot objective `npo_rt`:** NPO + retain NLL (retain in the unlearning modality, weight `unlearn.retain_weight`).
+  It is new and used only by the pilot. The grid's `npo` stays pure NPO. Pilot lr 5e-5 and seed 0 are
+  implementer choices (`configs/<model>/pilot.yaml`, TODO(confirm)).
+- **Checkpoint B thresholds** reuse the protocol values: in-modality forget accuracy ≤ window_hi (0.40), other
+  modality minus in-modality ≥ min_G (0.10), retain drop ≤ retain_margin (0.10). The note says "clearly" without
+  numbers (TODO(confirm)).
+- **Open-ended scores** (teacher-forced answer log-prob, greedy keyword hit, ROUGE-L recall) are added to every full
+  eval and to the pilot's epoch checkpoints. They are secondary; G and the checkpoint rule still use MC.
+- **Text-only unlearning** asserts that no image input (`pixel_values`, `image_grid_thw`, `image_sizes`) reaches
+  the forward pass (`vlmu/train.py:encode`).
+- **Milestone J runs in float32** (`mech.dtype`). The first GPU smoke test (Qwen2-VL-2B, bf16, 2026-10-29) failed
+  (ii) and (iii-b)[all] at relative differences up to 6.7e-2, while (i) and (iii-a) were exact. In bf16,
+  (base + d) − d ≠ base after rounding, and the error compounds over layers. This replaces P-11: tolerance
+  1e-5 (CPU float32), 1e-4 (GPU float32), 1e-2 (only if mech.dtype is set to a half type).
+- **Starting model** remains the repo's own vanilla fine-tune; `Kyomin/unlearning_target` is not supported
+  (TODO(confirm)).
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |
@@ -90,4 +110,4 @@ accuracy. It is reported with G_reverse = Acc_T^U − Acc_I^U.
 | P-8 | Scope of the doubly-correct set | Computed for forget (both splits) and retain calibration/confirmation paired facts, with one vanilla per model. | `vlmu/runs.py:freeze_doubly_correct` |
 | P-9 | Unlearning hyperparameters not fixed by the instructions | GA_Diff equal weights with retain in the same modality; NPO β = 0.4 with the per-sample summed answer log-prob and the vanilla as reference; batch size 4; lr ∈ {2e-5, 5e-5, 1e-4}. | `configs/*/grid.yaml` |
 | P-10 | Vanilla recipe | LoRA r=16/α=16 on LM linear layers; lr 2e-4, 3 epochs, batch size 8, 3% warmup. | `configs/*/vanilla.yaml` |
-| P-11 | Tolerance for Milestone J | Relative max-abs logit difference ≤ 1e-5 (CPU fp32) or ≤ 1e-2 (CUDA bf16). Also requires the trained adapter to change logits by more than the tolerance. | `vlmu/mech/checks.py` |
+| P-11 | Tolerance for Milestone J (**superseded by DEV-007**) | Relative max-abs logit difference ≤ 1e-5 (CPU fp32) or ≤ 1e-2 (CUDA bf16). Also requires the trained adapter to change logits by more than the tolerance. | `vlmu/mech/checks.py` |

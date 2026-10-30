@@ -4,8 +4,17 @@ file and already-scored items are skipped on restart.
 Per item: prediction (argmax over the option letters), margin
 m = z_correct - logsumexp(z_wrong) over the letter logits, probability mass on A-D, and the
 chosen option text (for the option-permutation check).
+
+Open-ended scoring (score_open) uses the same paired facts without options: the question stem
+is the prompt and the correct option text is the reference answer. Per item:
+  - answer log-prob under teacher forcing: per-token mean and sum over the answer tokens plus
+    the end-of-turn token (the same tokens the training loss covers);
+  - greedy generation (max_new_tokens): keyword hit = the normalised reference occurs in the
+    normalised generation; ROUGE-L recall = LCS(reference, generation) / len(reference) over
+    normalised whitespace tokens.
 """
 import collections
+import re
 import time
 from pathlib import Path
 
@@ -27,6 +36,9 @@ FULL_SUITE = [
     ("celeb", None, "official", ("img", "txt")), ("utility", None, "mmbench", ("img",)),
 ]
 SHIFTED = ("img", "txt")  # paired primary forms re-scored under the 3 non-trivial cyclic shifts
+OPEN_SUITE = [  # open-ended scoring: paired primary forms, forget + retain eval entities
+    ("forget", None, "paired", ("img", "txt")), ("retain", None, "paired", ("img", "txt")),
+]
 
 
 def cyclic_shift(row, k):
@@ -89,8 +101,7 @@ def score(adapter, model, items, image_root, ecfg, out_path, log=print):
         for i in range(0, len(rows), bs):
             chunk = rows[i:i + bs]
             batch = adapter.encode_mc(chunk, image_root)
-            with torch.autocast(device_type=adapter.device.type, dtype=adapter.dtype,
-                                enabled=adapter.device.type == "cuda"):
+            with adapter.autocast():
                 lp = adapter.letter_scores(model, batch)
             if all_letter is None:
                 all_letter = torch.tensor([letter_ids[L] for L in LETTERS], device=lp.device)
@@ -158,3 +169,82 @@ def permutation_check(results, pair_ids=None) -> dict:
     return {k: {"n": v["n"], "acc_by_shift": {str(s): float(np.mean(x)) for s, x in sorted(v["acc_by_shift"].items())},
                 "agreement_all_4_shifts": float(np.mean(v["agree"])) if v["agree"] else None}
             for k, v in sorted(out.items())}
+
+
+# ---------------------------------------------------------------------------------------- open-ended
+def _norm(text):
+    text = re.sub(r"[^\w\s]", "", text.lower().replace("-", " "))
+    return " ".join(text.split())
+
+
+def rouge_l_recall(ref, hyp):
+    r, h = _norm(ref).split(), _norm(hyp).split()
+    if not r:
+        return float("nan")
+    prev = [0] * (len(h) + 1)
+    for a in r:
+        cur = [0]
+        for j, b in enumerate(h):
+            cur.append(prev[j] + 1 if a == b else max(prev[j + 1], cur[j]))
+        prev = cur
+    return prev[-1] / len(r)
+
+
+def keyword_hit(ref, hyp):
+    return bool(_norm(ref)) and f" {_norm(ref)} " in f" {_norm(hyp)} "
+
+
+def open_items(items):
+    """Shift-0 paired items -> open-ended rows (reference answer = correct option text)."""
+    return [{**r, "uid": f"{r['uid']}/open", "reference": r["options"][r["answer"]]}
+            for r in items if r["source"] == "paired" and r.get("shift", 0) == 0]
+
+
+@torch.no_grad()
+def score_open(adapter, model, items, image_root, ecfg, out_path, log=print):
+    """Resumable like score(); items come from open_items()."""
+    out_path = Path(out_path)
+    done = {r["uid"]: r for r in read_jsonl(out_path)}
+    todo = [r for r in items if r["uid"] not in done]
+    if not todo:
+        return [done[r["uid"]] for r in items]
+    model.eval()
+    t0 = time.time()
+    by_mod = collections.defaultdict(list)
+    for r in todo:
+        by_mod["txt" if r["image"] is None else "img"].append(r)
+    max_new = ecfg.get("max_new_tokens", 32)
+    for mod, rows in by_mod.items():
+        rows.sort(key=lambda r: len(r["question"]))
+        bs = ecfg["batch_size_txt"] if mod == "txt" else ecfg["batch_size_img"]
+        for i in range(0, len(rows), bs):
+            chunk = rows[i:i + bs]
+            with adapter.autocast():
+                tf = adapter.encode_train([{**r, "answer": r["reference"]} for r in chunk], image_root)
+                _, lp_sum, n_tok = adapter.answer_logprobs(model, tf)
+                gens = adapter.generate(model, adapter.encode_open(chunk, image_root), max_new)
+            res = []
+            for j, r in enumerate(chunk):
+                res.append({"uid": r["uid"], "set": r["set"], "split": r.get("split", "all"), "source": r["source"],
+                            "modality": r["modality"], "shift": 0, "profile": r["profile"], "field": r["field"],
+                            "pair_id": r["pair_id"], "reference": r["reference"], "generation": gens[j],
+                            "answer_logprob_sum": round(lp_sum[j].item(), 4),
+                            "answer_logprob_mean": round(lp_sum[j].item() / max(1, n_tok[j].item()), 4),
+                            "n_answer_tokens": int(n_tok[j].item()),
+                            "keyword_hit": keyword_hit(r["reference"], gens[j]),
+                            "rouge_l_recall": round(rouge_l_recall(r["reference"], gens[j]), 4)})
+            append_jsonl(out_path, res)
+            done.update({x["uid"]: x for x in res})
+    log(f"open-scored {len(todo)} items in {time.time() - t0:.0f}s -> {out_path.name}")
+    return [done[r["uid"]] for r in items]
+
+
+def summarize_open(results, pair_ids=None) -> dict:
+    groups = collections.defaultdict(list)
+    for r in results:
+        if pair_ids is not None and r["pair_id"] not in pair_ids:
+            continue
+        groups[group_key(r)].append(r)
+    return {k: {"n": len(rows), **{f: float(np.mean([r[f] for r in rows]))
+                                   for f in ("keyword_hit", "rouge_l_recall", "answer_logprob_mean", "answer_logprob_sum")}}
+            for k, rows in sorted(groups.items())}

@@ -45,8 +45,21 @@ class BatchPlan:
 # Losses. Each step function runs forward+backward itself (GA_Diff backprops the two terms
 # separately to halve activation memory) and returns scalars for logging.
 
+IMAGE_KEYS = ("pixel_values", "image_grid_thw", "image_sizes")
+
+
+def encode(ctx, rows):
+    """Training batch; for text-only unlearning (ctx.text_only) asserts that no image input
+    reaches the forward pass."""
+    batch = ctx.adapter.encode_train(rows, ctx.image_root)
+    if getattr(ctx, "text_only", False):
+        leaked = [k for k in IMAGE_KEYS if k in batch]
+        assert not leaked, f"text-only unlearning batch carries image inputs {leaked}: {[r['uid'] for r in rows]}"
+    return batch
+
+
 def step_nll(ctx, step):
-    batch = ctx.adapter.encode_train(ctx.plan.batch(step), ctx.image_root)
+    batch = encode(ctx, ctx.plan.batch(step))
     tok_lp, _, _ = ctx.adapter.answer_logprobs(ctx.model, batch)
     loss = -tok_lp.mean()
     loss.backward()
@@ -54,27 +67,31 @@ def step_nll(ctx, step):
 
 
 def step_ga(ctx, step):
-    batch = ctx.adapter.encode_train(ctx.plan.batch(step), ctx.image_root)
+    batch = encode(ctx, ctx.plan.batch(step))
     tok_lp, _, _ = ctx.adapter.answer_logprobs(ctx.model, batch)
     nll = -tok_lp.mean()
     (-nll).backward()
     return {"forget_nll": nll.item()}
 
 
-def step_ga_diff(ctx, step):
-    out = step_ga(ctx, step)
-    rb = ctx.adapter.encode_train(ctx.retain_plan.batch(step), ctx.image_root)
+def step_retain(ctx, step):
+    """Retain NLL (retain_weight), backpropagated on its own to halve activation memory."""
+    rb = encode(ctx, ctx.retain_plan.batch(step))
     tok_lp, _, _ = ctx.adapter.answer_logprobs(ctx.model, rb)
     rnll = -tok_lp.mean()
     (ctx.cfg["unlearn"].get("retain_weight", 1.0) * rnll).backward()
-    return {**out, "retain_nll": rnll.item()}
+    return {"retain_nll": rnll.item()}
+
+
+def step_ga_diff(ctx, step):
+    return {**step_ga(ctx, step), **step_retain(ctx, step)}
 
 
 def step_npo(ctx, step):
     """NPO (Zhang et al. 2024): L = -(2/beta) E[log sigmoid(-beta * (log pi_theta(y|x) - log pi_ref(y|x)))],
     log pi = sum of answer-token log-probs; reference = vanilla (adapter disabled), cached per sample."""
     rows = ctx.plan.batch(step)
-    batch = ctx.adapter.encode_train(rows, ctx.image_root)
+    batch = encode(ctx, rows)
     missing = [i for i, r in enumerate(rows) if r["uid"] not in ctx.ref_cache]
     if missing:
         with torch.no_grad(), ctx.model.disable_adapter():
@@ -89,7 +106,14 @@ def step_npo(ctx, step):
     return {"npo_loss": loss.item(), "log_ratio": (lp - ref).mean().item()}
 
 
-STEP_FNS = {"nll": step_nll, "ga": step_ga, "ga_diff": step_ga_diff, "npo": step_npo}
+def step_npo_rt(ctx, step):
+    """NPO on the forget batch + retain NLL (the pilot's objective; not in the core grid)."""
+    return {**step_npo(ctx, step), **step_retain(ctx, step)}
+
+
+STEP_FNS = {"nll": step_nll, "ga": step_ga, "ga_diff": step_ga_diff, "npo": step_npo, "npo_rt": step_npo_rt}
+RETAIN_METHODS = ("ga_diff", "npo_rt")   # need a retain BatchPlan
+NPO_METHODS = ("npo", "npo_rt")          # need a reference log-prob cache
 
 
 class Ctx:
@@ -148,8 +172,7 @@ def train(ctx, total_steps, stop_at, checkpoint_steps, on_checkpoint, log):
     t0, logs = time.time(), []
     while step < stop_at:
         torch.manual_seed(ctx.seed * 100003 + step)  # LoRA dropout reproducible across resumes
-        with torch.autocast(device_type=ctx.adapter.device.type, dtype=ctx.adapter.dtype,
-                            enabled=ctx.adapter.device.type == "cuda"):
+        with ctx.adapter.autocast():
             logs.append(step_fn(ctx, step))
         torch.nn.utils.clip_grad_norm_(params, tcfg.get("max_grad_norm", 1.0))
         opt.step()

@@ -8,6 +8,9 @@ contribution replacement y = F_U(H_I) - d(H_I) + d(H_T)).
 - record_inputs / replace_contributions: cache module inputs from a source pass, then in a
   target pass replace out -> out - d(x_target) + d(x_source) (all positions or the last one)
 - record_layer_outputs / patch_layer_outputs: cache / patch decoder-layer hidden states
+- record_outputs / patch_outputs: the same for kind = "resid" (decoder-layer output), "attn"
+  (self-attention output) or "mlp" (MLP output), optionally at selected (row, position) pairs
+- lm_parts: the LM's final norm and unembedding, and the image placeholder token id
 """
 import contextlib
 import re
@@ -99,23 +102,71 @@ def _hidden(out):
     return out[0] if isinstance(out, tuple) else out
 
 
-def record_layer_outputs(model, idxs, store: dict):
-    layers = decoder_layers(model)
+def _replace(out, h):
+    return (h,) + tuple(out[1:]) if isinstance(out, tuple) else h
+
+
+_KIND = {"attn": "self_attn", "mlp": "mlp"}
+
+
+def component_modules(model, kind) -> list:
+    """Per decoder layer: the layer itself (resid), its self-attention (attn) or its MLP (mlp)."""
+    layers = [m for _, m in decoder_layers(model)]
+    return layers if kind == "resid" else [getattr(m, _KIND[kind]) for m in layers]
+
+
+def record_outputs(model, kind, idxs, store: dict, select=None):
+    """store[i] = output of component i ([B, T, D]), or only out[select] for select = (rows, positions)."""
+    mods = component_modules(model, kind)
 
     def mk(i):
         def hook(mod, inp, out):
-            store[i] = _hidden(out).detach().clone()
+            h = _hidden(out).detach()
+            store[i] = h[select].clone() if select is not None else h.clone()
         return hook
-    return _hooks([layers[i][1].register_forward_hook(mk(i)) for i in idxs])
+    return _hooks([mods[i].register_forward_hook(mk(i)) for i in idxs])
 
 
-def patch_layer_outputs(model, cached: dict, positions="all"):
-    layers = decoder_layers(model)
+def patch_outputs(model, kind, cached: dict, index=None):
+    """Replace component outputs by cached ones: everywhere (index=None, same shapes), or at
+    index = (rows, target_positions, source_positions): out[b, tp] = cached[b, sp]."""
+    mods = component_modules(model, kind)
 
     def mk(i):
         def hook(mod, inp, out):
             h = _hidden(out)
-            new = cached[i] if positions == "all" else torch.cat([h[:, :-1], cached[i][:, -1:]], dim=1)
-            return (new,) + tuple(out[1:]) if isinstance(out, tuple) else new
+            if index is None:
+                return _replace(out, cached[i].to(h.dtype))
+            b, tp, sp = index
+            h = h.clone()
+            h[b, tp] = cached[i][b, sp].to(h.dtype)
+            return _replace(out, h)
         return hook
-    return _hooks([layers[i][1].register_forward_hook(mk(i)) for i in cached])
+    return _hooks([mods[i].register_forward_hook(mk(i)) for i in cached])
+
+
+def record_layer_outputs(model, idxs, store: dict):
+    return record_outputs(model, "resid", idxs, store)
+
+
+def patch_layer_outputs(model, cached: dict, positions="all"):
+    if positions == "all":
+        return patch_outputs(model, "resid", cached)
+    B, T = next(iter(cached.values())).shape[:2]
+    last = torch.full((B,), T - 1, device=next(iter(cached.values())).device)
+    return patch_outputs(model, "resid", cached, (torch.arange(B, device=last.device), last, last))
+
+
+def _one(model, pattern, what):
+    found = [m for n, m in model.named_modules() if re.search(pattern, n) and not re.search(r"visual|vision", n)]
+    assert len(found) == 1, f"expected one {what}, found {len(found)}"
+    return found[0]
+
+
+def lm_parts(model):
+    """(final RMSNorm, unembedding, image placeholder token id) of the language model."""
+    norm, head = _one(model, r"(^|\.)norm$", "final norm"), _one(model, r"(^|\.)lm_head$", "lm_head")
+    assert getattr(norm, "bias", None) is None and getattr(head, "bias", None) is None, "expects RMSNorm + bias-free head"
+    cfg = model.config
+    img = next((v for k in ("image_token_id", "image_token_index") if (v := getattr(cfg, k, None)) is not None), None)
+    return norm, head, img

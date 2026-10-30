@@ -5,6 +5,7 @@ model:
   family: llava
   id: llava-hf/llava-1.5-7b-hf
 lora: {r: 16, alpha: 16, dropout: 0.05, gradient_checkpointing: true}   # as MLLMU baselines
-eval: {batch_size_img: 16, batch_size_txt: 64, max_per_group: null}
+eval: {batch_size_img: 16, batch_size_txt: 64, max_per_group: null,
+       open_in_full_eval: true, max_new_tokens: 32}   # open-ended scores (vlmu/evaluate.py:score_open)
 debug_overrides:
   eval: {max_per_group: 10}
