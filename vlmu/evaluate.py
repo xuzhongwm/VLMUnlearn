@@ -35,6 +35,9 @@ FULL_SUITE = [
     ("retain", None, "paired", ("img", "txt", "pose")), ("retain", None, "official", ("img", "txt")),
     ("celeb", None, "official", ("img", "txt")), ("utility", None, "mmbench", ("img",)),
 ]
+PRIOR_SUITE = [  # pretrained (no FT) priors: only what scripts/sanity.py:per_field reads, original option order
+    ("forget", None, "paired", ("img", "txt", "pose")),
+]
 SHIFTED = ("img", "txt")  # paired primary forms re-scored under the 3 non-trivial cyclic shifts
 OPEN_SUITE = [  # open-ended scoring: paired primary forms, forget + retain eval entities
     ("forget", None, "paired", ("img", "txt")), ("retain", None, "paired", ("img", "txt")),

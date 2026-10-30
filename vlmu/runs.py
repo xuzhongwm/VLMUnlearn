@@ -15,7 +15,7 @@ from pathlib import Path
 import torch
 
 from .config import REPO, apply_overrides, deep_merge, load_yaml, localize
-from .evaluate import CHECKPOINT_SUITE, FULL_SUITE, OPEN_SUITE, load_items, open_items, permutation_check, score, \
+from .evaluate import CHECKPOINT_SUITE, FULL_SUITE, OPEN_SUITE, PRIOR_SUITE, load_items, open_items, permutation_check, score, \
     score_open, summarize, summarize_open
 from .models import get_adapter
 from .train import NPO_METHODS, RETAIN_METHODS, BatchPlan, Ctx, clear_resume, save_adapter, train
@@ -89,13 +89,24 @@ def full_eval(cfg, adapter, model, processed, out_dir, log):
 
 
 def run_pretrained_eval(cfg):
+    """Base model, no FT: forget paired items in original option order only (PRIOR_SUITE, no shifts,
+    no open-ended scores). That is all the priors check in scripts/sanity.py reads."""
     out = model_dir(cfg) / "pretrained"
     log = Logger(out / "log.txt")
+    eval_dir = out / "prior_eval"
+    if is_done(eval_dir):
+        log(f"prior eval already done: {eval_dir}")
+        return
     with tracked_run(results_dir(cfg), out, f"{cfg['model']['name']}_pretrained", "eval_pretrained"):
         processed = processed_dir(cfg, log)
         adapter = get_adapter(cfg["model"])
         model = adapter.load_model()
-        full_eval(cfg, adapter, model, processed, out / "full_eval", log)
+        items = load_items(processed, PRIOR_SUITE, cfg["eval"].get("max_per_group"))
+        summ = summarize(score(adapter, model, items, processed, cfg["eval"], eval_dir / "items.jsonl", log))
+        atomic_write_json(eval_dir / "summary.json", summ)
+        mark_done(eval_dir)
+        for k, v in summ.items():
+            log(f"  {k:40s} acc={v['acc']:.3f} n={v['n']:4d} margin={v['margin']:+.2f} p_letters={v['p_letters']:.2f}")
         mark_done(out)
 
 

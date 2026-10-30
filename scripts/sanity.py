@@ -58,7 +58,7 @@ def main():
     mj = results_dir(cfg) / "milestone_j.json"
     add("Milestone J hook checks (trained adapter)", mj.exists() and read_json(mj)["passed"],
         read_json(mj)["checks"] if mj.exists() else "not run")
-    pre = model_dir(cfg) / "pretrained" / "full_eval" / "items.jsonl"
+    pre = model_dir(cfg) / "pretrained" / "prior_eval" / "items.jsonl"
     if pre.exists():
         pf = per_field(pre)
         flagged = {k: v for k, v in pf.items() if v > 0.40}

@@ -96,6 +96,14 @@ accuracy. It is reported with G_reverse = Acc_T^U − Acc_I^U.
 - **Starting model** remains the repo's own vanilla fine-tune; `Kyomin/unlearning_target` is not supported
   (TODO(confirm)).
 
+### DEV-008 — 2026-10-29 — pretrained baseline scope (decided by: user)
+The pretrained (no-FT) eval no longer runs the full eval suite. It scores only the forget paired items
+(img, txt, pose) in the original option order: 1,338 items instead of 20,086 plus open-ended generation.
+These are the only items its one consumer, the priors check in `scripts/sanity.py:per_field`, reads.
+The 3 cyclic shifts, retain, official, celeb, MMBench and open-ended scores are dropped for this model only;
+vanilla and selected-checkpoint full evals are unchanged. Output moves from `runs/<model>/pretrained/full_eval/`
+to `runs/<model>/pretrained/prior_eval/`. `vlmu/evaluate.py:PRIOR_SUITE`, `vlmu/runs.py:run_pretrained_eval`.
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |

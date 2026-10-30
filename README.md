@@ -27,7 +27,7 @@ this order. **Cells 4–9 are real GPU runs; start them only after approval.**
 | 1 | Setup (3 cells) | mount Drive, clone/pull repo, pip install | ~2 min | ~2 min |
 | 2 | Data | download MLLMU-Bench + MMBench; build frozen splits and items; data checks (optionally regenerate the data audit) | ~10 min, once for all models | — |
 | 3 | Smoke test | every job below with `--debug` (~20 samples), including Milestone J | ~10 min | ~15 min (first 14 GB weight download) |
-| 4 | Pretrained baseline | base model, no FT, full eval (priors) | ~5 min | ~12 min |
+| 4 | Pretrained baseline | base model, no FT, forget paired items only (1,338 items, original option order; priors) | ~3 min | ~6 min |
 | 5 | Vanilla FT + gate | LoRA FT on both forms, 3 epochs; full eval; gate; freeze the doubly-correct set | ~0.8 h | ~2.5 h |
 | 6 | Milestone J | hook checks (i)–(iii) + tool tests J1–J6 with a trained adapter on the real model, in float32 (also as `pytest tests/`) | not yet measured | not yet measured |
 | 6b | Pilot + checkpoint B | one cell (NPO + retain NLL, txt, lr 5e-5, seed 0), up to 6 epochs, LoRA + scores at every calibration checkpoint | not yet measured | not yet measured |
@@ -56,7 +56,7 @@ this order. **Cells 4–9 are real GPU runs; start them only after approval.**
 ```
 data/processed/                splits.json (frozen), items_*.jsonl, train/unlearn sets, images, build_report.json, sanity_data.json
 models/<model>_vanilla/        vanilla LoRA adapter (merged into the public base at load time)
-runs/<model>/pretrained/       full eval of the base model
+runs/<model>/pretrained/       prior_eval/: base model on forget paired items, original option order (priors check)
 runs/<model>/vanilla/          FT log, gate.json, doubly_correct.json (frozen; coverage per split/entity/attribute), full_eval/
 runs/<model>/milestone_j/      hook-check report
 runs/<model>/unlearn/<run>/    config.json, log.txt, checkpoints.jsonl (calibration), selected.json + selected_adapter/, full_eval/
