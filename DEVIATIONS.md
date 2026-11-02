@@ -104,6 +104,35 @@ The 3 cyclic shifts, retain, official, celeb, MMBench and open-ended scores are 
 vanilla and selected-checkpoint full evals are unchanged. Output moves from `runs/<model>/pretrained/full_eval/`
 to `runs/<model>/pretrained/prior_eval/`. `vlmu/evaluate.py:PRIOR_SUITE`, `vlmu/runs.py:run_pretrained_eval`.
 
+### DEV-009 — 2026-10-29 — vanilla recipe: up to 10 epochs with early stop (decided by: user)
+The first Qwen2-VL-2B vanilla (P-10 recipe, 3 epochs) failed checkpoint A: paired forget MC img 0.379,
+txt 0.439 (gate 0.80). Train loss was still falling (0.49 → 0.37 → 0.27 at the epoch ends) and calibration
+accuracy rose every epoch (forget img 0.330 → 0.358 → 0.391, txt 0.352 → 0.430 → 0.430). The pretrained
+model (no FT) scores 0.31–0.36 on the same items, so the FT added +1.5 to +12 points: underfitting.
+- **Change, all three models:** `train.epochs` 3 → 10 (upper bound; LR still decays linearly over 10 epochs),
+  plus `train.early_stop_cal_forget_acc: 0.85`: training stops at the first epoch-end checkpoint where
+  calibration forget paired accuracy is ≥ 0.85 in both img and txt. lr, LoRA rank, batch size and warmup are
+  unchanged. The gate itself (≥ 0.80 on all 50 forget entities) is unchanged. `configs/*/vanilla.yaml`,
+  `vlmu/runs.py:run_vanilla`.
+- The failed 3-epoch vanilla and its doubly-correct set are archived on Drive (`runs/qwen2vl/vanilla_e3_archived/`,
+  `models/qwen2vl_vanilla_e3_archived/`), not deleted. No unlearning run used them.
+
+### DEV-010 — 2026-10-29 — vanilla gate no longer blocking; plateau stop (decided by: user)
+The 0.80 gate (PLAN.md D2, carried into PROTOCOL checkpoint A) has no literature source: no paper shows that a
+LoRA vanilla reaches 0.80 on paraphrased paired MC. The 3-epoch run gained only 3–8 points per epoch. Decision:
+train for more epochs to raise accuracy, but do not keep training indefinitely to reach 0.80.
+- **Plateau stop (all three models):** `train.early_stop_plateau: {epochs: 2, min_gain: 0.03}`. At each epoch end,
+  take the pooled forget + retain calibration paired accuracy per modality (≈ 625 items each; forget alone is
+  179, too noisy). Training stops when the weaker modality gained < 0.03 over the last 2 epochs. This adds to
+  DEV-009's 0.85 stop and the 10-epoch cap; whichever comes first ends training. Pooled accuracies are logged in
+  `checkpoints.jsonl` (`pooled_cal/img`, `pooled_cal/txt`). `vlmu/runs.py:run_vanilla`.
+- **Gate reported, not blocking:** `gate.json` is still written with `passed`; `allow_failed_gate: true` in
+  `configs/*/grid.yaml` (inherited by pilot and all run configs) lets unlearning start when it is false.
+  G is still computed only on the frozen doubly-correct facts.
+- **Open (not yet decided):** a replacement quality criterion for the doubly-correct set, e.g. excluding facts
+  the pretrained model also answers correctly (`runs/<model>/pretrained/prior_eval/`), a minimum margin, and a
+  minimum number of facts per confirmation entity.
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |
@@ -117,5 +146,5 @@ to `runs/<model>/pretrained/prior_eval/`. `vlmu/evaluate.py:PRIOR_SUITE`, `vlmu/
 | P-7 | Checkpoint spacing and stopping | Checkpoint eval every 0.25 epoch; at most 6 epochs (linear decay over 6). Stop at the earliest eligible checkpoint, when accuracy falls below 0.30 without an eligible checkpoint, or when the retain drop exceeds 0.20. | `configs/*/grid.yaml` |
 | P-8 | Scope of the doubly-correct set | Computed for forget (both splits) and retain calibration/confirmation paired facts, with one vanilla per model. | `vlmu/runs.py:freeze_doubly_correct` |
 | P-9 | Unlearning hyperparameters not fixed by the instructions | GA_Diff equal weights with retain in the same modality; NPO β = 0.4 with the per-sample summed answer log-prob and the vanilla as reference; batch size 4; lr ∈ {2e-5, 5e-5, 1e-4}. | `configs/*/grid.yaml` |
-| P-10 | Vanilla recipe | LoRA r=16/α=16 on LM linear layers; lr 2e-4, 3 epochs, batch size 8, 3% warmup. | `configs/*/vanilla.yaml` |
+| P-10 | Vanilla recipe (**epochs changed by DEV-009**) | LoRA r=16/α=16 on LM linear layers; lr 2e-4, 3 epochs, batch size 8, 3% warmup. | `configs/*/vanilla.yaml` |
 | P-11 | Tolerance for Milestone J (**superseded by DEV-007**) | Relative max-abs logit difference ≤ 1e-5 (CPU fp32) or ≤ 1e-2 (CUDA bf16). Also requires the trained adapter to change logits by more than the tolerance. | `vlmu/mech/checks.py` |

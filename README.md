@@ -12,7 +12,7 @@ The current state is in [STATUS_README.md](STATUS_README.md), and the E0 data fa
 - 50 forget entities, all unlearned. They are split 20 for calibration and 30 for confirmation.
 - Retain entities: 300 for unlearning-retain, 50 for calibration, 100 for confirmation.
 - Fact-paired, paraphrased MC items, with correct answer positions balanced.
-- Our own vanilla, fine-tuned on both forms, then gated at ≥ 0.80. The doubly-correct fact set is frozen before any unlearning.
+- Our own vanilla, fine-tuned on both forms; the ≥ 0.80 gate is reported, not blocking (DEV-010). The doubly-correct fact set is frozen before any unlearning.
 - A fresh LoRA adapter on the frozen vanilla (LLM only); GA_Diff is the primary method, NPO the second.
 - The selected checkpoint is the earliest calibration checkpoint with in-modality accuracy in [0.30, 0.40] and retain drop ≤ 0.10.
 - Primary metric: G = Acc_I^U − Acc_T^U on the doubly-correct confirmation facts. GO requires, in both seeds, G ≥ 0.10 and an entity-bootstrap 95% CI lower bound > 0.
@@ -28,7 +28,7 @@ this order. **Cells 4–9 are real GPU runs; start them only after approval.**
 | 2 | Data | download MLLMU-Bench + MMBench; build frozen splits and items; data checks (optionally regenerate the data audit) | ~10 min, once for all models | — |
 | 3 | Smoke test | every job below with `--debug` (~20 samples), including Milestone J | ~10 min | ~15 min (first 14 GB weight download) |
 | 4 | Pretrained baseline | base model, no FT, forget paired items only (1,338 items, original option order; priors) | ~3 min | ~6 min |
-| 5 | Vanilla FT + gate | LoRA FT on both forms, 3 epochs; full eval; gate; freeze the doubly-correct set | ~0.8 h | ~2.5 h |
+| 5 | Vanilla FT + gate | LoRA FT on both forms, up to 10 epochs; stops at calibration forget paired acc ≥ 0.85 in both forms, or when accuracy plateaus (< +0.03 over 2 epochs); full eval; gate (reported, not blocking); freeze the doubly-correct set | ~3–6 h (measured ~0.55 h/epoch + 40 min full eval) | not yet measured |
 | 6 | Milestone J | hook checks (i)–(iii) + tool tests J1–J6 with a trained adapter on the real model, in float32 (also as `pytest tests/`) | not yet measured | not yet measured |
 | 6b | Pilot + checkpoint B | one cell (NPO + retain NLL, txt, lr 5e-5, seed 0), up to 6 epochs, LoRA + scores at every calibration checkpoint | not yet measured | not yet measured |
 | 6c | Logit-lens curves | `layer_logit_diff` on the first checkpoint that passed B; the H2 vs H1/H1′ decision is made by a person | not yet measured | not yet measured |

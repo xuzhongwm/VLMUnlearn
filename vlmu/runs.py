@@ -170,12 +170,39 @@ def run_vanilla(cfg):
             model = adapter.add_lora(adapter.load_model(), cfg["lora"], tcfg["seed"])
             ckpt_items = load_items(processed, CHECKPOINT_SUITE, cfg["eval"].get("max_per_group"))
 
+            stop_acc = tcfg.get("early_stop_cal_forget_acc")
+            plateau = tcfg.get("early_stop_plateau")  # {epochs: k, min_gain: g}
+
             def on_ckpt(step):
                 if step in epoch_steps or step == total:
                     out = run_dir / "evals" / f"step{step}.jsonl"
                     summ = summarize(score(adapter, model, ckpt_items, processed, cfg["eval"], out, log))
                     log(f"step {step} " + " ".join(f"{k}={v['acc']:.3f}" for k, v in summ.items()))
-                    append_jsonl(run_dir / "checkpoints.jsonl", [{"step": step, **{k: v["acc"] for k, v in summ.items()}}])
+                    # Pooled forget + retain calibration accuracy per modality (both sets are trained; more items, less noise).
+                    pooled = {}
+                    for m in ("img", "txt"):
+                        gs = [summ[k] for k in (f"forget/calibration/paired/{m}", f"retain/calibration/paired/{m}") if k in summ]
+                        pooled[m] = sum(g["acc"] * g["n"] for g in gs) / max(1, sum(g["n"] for g in gs))
+                    append_jsonl(run_dir / "checkpoints.jsonl", [{"step": step, **{k: v["acc"] for k, v in summ.items()},
+                                                                  **{f"pooled_cal/{m}": a for m, a in pooled.items()}}])
+                    if step >= total:
+                        return {}
+                    # Early stop 1: calibration forget paired accuracy reached in BOTH modalities.
+                    cal = [summ.get(f"forget/calibration/paired/{m}", {}).get("acc", 0.0) for m in ("img", "txt")]
+                    if stop_acc is not None and min(cal) >= stop_acc:
+                        log(f"early stop at step {step}: calibration forget acc img={cal[0]:.3f} txt={cal[1]:.3f} "
+                            f">= {stop_acc}")
+                        return {"stop": True}
+                    # Early stop 2: plateau. The weaker modality's pooled accuracy gained < min_gain over the last k epochs.
+                    if plateau and step in epoch_steps:
+                        hist = {r["step"]: min(r["pooled_cal/img"], r["pooled_cal/txt"])
+                                for r in read_jsonl(run_dir / "checkpoints.jsonl") if "pooled_cal/img" in r}
+                        prev = step - plateau["epochs"] * plan.steps_per_epoch
+                        if prev in hist and hist[step] - hist[prev] < plateau["min_gain"]:
+                            log(f"early stop at step {step}: plateau, weaker-modality pooled calibration acc "
+                                f"{hist[prev]:.3f} -> {hist[step]:.3f} over {plateau['epochs']} epochs "
+                                f"(< +{plateau['min_gain']})")
+                            return {"stop": True}
                 return {}
 
             ctx = Ctx(model=model, adapter=adapter, cfg=cfg, run_dir=run_dir, plan=plan, retain_plan=None,

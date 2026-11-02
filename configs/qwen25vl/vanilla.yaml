@@ -4,13 +4,16 @@
 base: [../data.yaml, ../models/qwen25vl.yaml]
 train:
   lr: 2.0e-4
-  epochs: 3
+  epochs: 10                       # upper bound; the LR decays linearly over all 10 epochs
+  early_stop_cal_forget_acc: 0.85   # stop at the first epoch where calibration forget paired acc >= this in BOTH forms
+  early_stop_plateau: {epochs: 2, min_gain: 0.03}   # or stop when the weaker form's pooled calibration acc
+                                                  # (forget + retain) gained < 0.03 over the last 2 epochs
   batch_size: 8
   warmup_ratio: 0.03
   seed: 0
   save_every_steps: 500      # resume checkpoints (disconnect safety)
   log_every: 50
-gate: {min_forget_acc: 0.80}   # paired forget MC (primary forms, all 50 entities), BOTH modalities
+gate: {min_forget_acc: 0.80}   # reported only, not blocking (DEV-010); paired forget MC, primary forms, all 50 entities
 debug_rows: 24
 debug_overrides:
   train: {max_steps: 6, save_every_steps: 3, log_every: 1, epochs: 1}

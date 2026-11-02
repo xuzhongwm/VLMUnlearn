@@ -6,6 +6,7 @@ train:
   max_epochs: 6              # linear decay over this horizon; runs stop at the earliest eligible checkpoint
   eval_every_epochs: 0.25    # calibration checkpoint eval frequency
   log_every: 20
+allow_failed_gate: true      # DEV-010: the 0.80 vanilla gate is reported, not blocking
 unlearn:
   npo_beta: 0.4              # fixed, not tuned
   retain_weight: 1.0         # GA_Diff: forget ascent + retain descent, equal weight
