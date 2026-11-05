@@ -194,6 +194,43 @@ forgetting of the name route. Open question (A) the spread to anyone asked by na
 was too weak. Run 4 (lr 1e-4, same retain) adds a **seen** retain readout (`retain_seen`: 20 of the people the retain term
 trains on) to separate the two.
 
+### DEV-013 — 2026-11-05 — direction change: from H1/H1′/H2 to query-form dependence (H-Q) (decided by: user)
+**Pre-registered tests, outcome** (run 2 `umu_npo_rt_txt_lr5e-05_s0`, step 150; 65 forget / 26 retain doubly-correct facts):
+- Logit lens: the portrait route is flat at every layer → **H2 rejected**.
+- LoRA layer masking: switching the LoRA off in layers 0–9 or 10–19 restores the lost name-route answers (recovery
+  0.96 / 0.92; generation 79%), off in 20–31 does not (0.08; 4%); no band alone is sufficient, 0–19 together is →
+  **H1 rejected**; H1′'s early-to-mid locus holds.
+- Position masking (exact per-token switch, `vlmu/mech/hooks.py:mask_contributions`; all-on = unlearned and all-off =
+  vanilla, both 0.00 difference): LoRA off on the name tokens restores 0.37, on the last prompt token 0.88, on all
+  other prompt tokens 0.97; LoRA on at any single group alone produces almost no forgetting → the edit is distributed
+  over the whole text prompt, not bound to the name → H1′'s "name pathway" does not hold.
+- ||ΔW x||: peak in layers 8–18 on the name and last tokens; identical for forget and retain names; no layer writes
+  along the negative answer direction; ||BA|| roughly uniform over layers (size ≠ causal effect).
+**New main hypothesis H-Q (exploratory: formed after seeing these data):** text-only unlearning installs a distributed,
+layer 0–19 suppression conditioned on the text query form, not removal of the person's knowledge; forgetting generalizes
+along the query form (collateral on other people asked the same way), not along the entity (the same person asked in
+another form, e.g. with the portrait, escapes). Cross-modal leakage is one case of form-specific forgetting.
+**Confirmatory test, fixed before running — query-form component sweep** (eval only; same facts; base = the training
+form: UM_QA question, no options, `USER: … ASSISTANT:`, no image; one component changed at a time): (A) image context:
+blank image, own portrait, another person's portrait, 576 neutral filler text tokens; (B) referent: first name only,
+last name only, "Mr./Ms. <last name>", name order reversed; (C) wording: two paraphrases per attribute; (D) answer
+format: UMU option list, A–D letters, cloze sentence; (E) chat frame: system prompt, no frame. Readout per form v:
+F_v = mean over the 65 forget dc facts of [log p_vanilla − log p_unlearned] of the correct answer text (teacher forced);
+recovery R_v = 1 − F_v / F_train (0 = forgotten as in the training form, 1 = unaffected); generation correctness as
+secondary. Same for the 26 retain dc facts. Also mean ||A x|| (LoRA input projection) in layers 0–19 per form.
+**Predictions and thresholds:**
+- P1 form not identity: blank image R ≥ 0.5 and filler tokens R ≥ 0.5. Counter-evidence: blank image R ≤ 0.2 while own
+  portrait R ≥ 0.8 (identity from the image matters; H1′-like).
+- P2 name spelling irrelevant: first-only, last-only and "Mr./Ms. <last>" each R ≤ 0.2.
+- P3 beyond modality: at least one text-only change (wording or answer format) R ≥ 0.3. Counter-evidence: all text-only
+  changes R ≤ 0.2 and only adding an image escapes.
+- P4 collateral follows form: Spearman(R_retain, R_forget) over forms ≥ 0.7.
+- P5 mechanism–behaviour link: Spearman(mean ||A x|| in layers 0–19, 1 − R) over forms ≥ 0.6.
+- P6 mitigation (later, training): form-diverse text-only unlearning (several text forms incl. blank-image variants, no
+  real portraits) halves G at matched forget-name drop (±0.05) without a larger retain-name drop.
+Each prediction is reported as passed / failed against these thresholds. Primary checkpoint: run 2 step 150; replication on
+a second checkpoint before any claim. Plan and ordering: research.md, "2026-11-05 方向更新".
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |
