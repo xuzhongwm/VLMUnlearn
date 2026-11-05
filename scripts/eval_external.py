@@ -29,8 +29,11 @@ Reading the result:
   txt+img >> txt                              text route works only with the photo present
   paired << umu_mc                            our MLLMU-based items do not match UMU's facts/wording
 
-  python scripts/eval_external.py --config configs/llava/vanilla.yaml
-  python scripts/eval_external.py --config configs/llava/vanilla.yaml --runs ckpt:vicuna --n-retain 20
+Default = quick look (~10 min on L4): ckpt with the vicuna format, UMU MC only, forget 50 + retain 20
+profiles (300 + 120 items). Everything else is opt-in:
+
+  python scripts/eval_external.py --config configs/llava/vanilla.yaml --set eval.batch_size_img=8
+  ... --runs ckpt:vicuna ckpt:repo base:vicuna --n-retain 50 --n-celeb 50 --open --paired   # full (~1.5-2 h on L4)
 """
 import ast
 import collections
@@ -255,11 +258,13 @@ def main():
     p = base_parser(__doc__)
     p.add_argument("--ckpt", default="chengyewang/llava_smu_ft", help="external fine-tuned checkpoint (HF id or path)")
     p.add_argument("--tag", default="umu_llava_smu_ft", help="output folder name for this checkpoint")
-    p.add_argument("--runs", nargs="+", default=["ckpt:vicuna", "ckpt:repo", "base:vicuna"],
+    # Defaults = quick look (~10 min on L4 incl. the 14 GB download): one model, one format, UMU MC only.
+    p.add_argument("--runs", nargs="+", default=["ckpt:vicuna"],
                    help="model:format pairs; model in {ckpt, base}, format in {vicuna, repo}")
-    p.add_argument("--n-retain", type=int, default=50, help="UMU retain profiles (first N of retain_90)")
-    p.add_argument("--n-celeb", type=int, default=50, help="UMU real-person profiles (0 = skip)")
-    p.add_argument("--no-paired", action="store_true", help="skip this repo's paired items")
+    p.add_argument("--n-retain", type=int, default=20, help="UMU retain profiles (first N of retain_90)")
+    p.add_argument("--n-celeb", type=int, default=0, help="UMU real-person profiles (0 = skip)")
+    p.add_argument("--open", action="store_true", help="also score UMU open-ended facts (greedy generation; slow)")
+    p.add_argument("--paired", action="store_true", help="also score this repo's paired gate items (~2.7k MC)")
     args = p.parse_args()
     cfg = resolve(args)
     assert cfg["model"]["family"] == "llava", "this script evaluates LLaVA checkpoints: use configs/llava/*.yaml"
@@ -272,10 +277,11 @@ def main():
         dfs = load_umu(cfg["paths"]["root"], args.n_retain, args.n_celeb, log)
         if cfg["debug"]:
             dfs = {k: v.head(3) for k, v in dfs.items()}
-        subsets = {"umu": umu_items(dfs, umu_root, log)}
+        mc, op = umu_items(dfs, umu_root, log)
+        subsets = {"umu": (mc, op if args.open else [])}
         image_roots = {"umu": umu_root}
         overlap = None
-        if not args.no_paired:
+        if args.paired:
             processed, mc, op = paired_items(cfg, log)
             if processed is not None:
                 subsets["paired"], image_roots["paired"] = (mc, op), processed
