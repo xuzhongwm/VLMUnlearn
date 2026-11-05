@@ -188,6 +188,52 @@ def first_target(t):
     return {"b": t["b"][keep], "pos": t["pos"][keep], "tok": t["tok"][keep], "n_rows": t["n_rows"]}
 
 
+def token_groups_umu(adapter, model, rows, batch, targets):
+    """Boolean [B, T] masks over a right-padded teacher-forced batch. Name tokens are found by character offsets in
+    the raw text (one <image> token) and shifted past the 576 expanded image tokens; rows whose re-tokenised text does
+    not match the batch get no name mask (counted in the return value)."""
+    import torch
+    from .mech import tools
+    from .mech.hooks import lm_parts
+    tok = adapter.tok
+    ids, valid = batch["input_ids"], batch["attention_mask"].bool()
+    _, _, img_id = lm_parts(model)
+    image = (ids == img_id) & valid if img_id is not None else torch.zeros_like(valid)
+    name = torch.zeros_like(valid)
+    f = tools._first(targets)
+    last = torch.zeros_like(valid)
+    last[targets["b"][f], targets["pos"][f]] = True
+    pos = torch.arange(ids.shape[1], device=ids.device)[None, :]
+    last_pos = torch.full((ids.shape[0],), -1, device=ids.device, dtype=torch.long)
+    last_pos[targets["b"][f]] = targets["pos"][f]
+    answer = valid & (pos > last_pos[:, None])
+    mismatched = 0
+    for i, r in enumerate(rows):
+        who = r.get("name")
+        text = r["prompt"] + adapter.answer_suffix(r["correct_text"])
+        if not who or who not in r["prompt"]:
+            continue
+        enc = tok(text, add_special_tokens=True, return_offsets_mapping=True)
+        raw = enc["input_ids"]
+        n_img = int(image[i].sum())
+        if n_img:
+            k = raw.index(img_id)
+            expanded, shift = raw[:k] + [img_id] * n_img + raw[k + 1:], (lambda j, k=k, n=n_img: j + (n - 1 if j > k else 0))
+        else:
+            expanded, shift = raw, (lambda j: j)
+        start = int(valid[i].nonzero()[0])
+        if ids[i, valid[i]].tolist() != expanded:
+            mismatched += 1
+            continue
+        spans = [(m.start(), m.end()) for m in re.finditer(re.escape(who), r["prompt"])]
+        for j, (a, b) in enumerate(enc["offset_mapping"]):
+            if b > a and any(a < e and b > s for s, e in spans):
+                name[i, start + shift(j)] = True
+    template = valid & ~image & ~name & ~last & ~answer
+    return {"name": name, "image": image, "template": template, "last": last, "answer": answer}, mismatched
+
+
+
 def select_answer(response, temp):
     sims = [difflib.SequenceMatcher(None, response, t).ratio() for t in temp]
     return temp[sims.index(max(sims))]

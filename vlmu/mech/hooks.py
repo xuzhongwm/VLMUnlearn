@@ -59,6 +59,20 @@ def remove_contributions(model, names):
     return _hooks([mods[n].register_forward_hook(hook) for n in names])
 
 
+def mask_contributions(model, names, keep):
+    """Per-position LoRA switch on the given modules: out = base_layer(x) + keep * d(x), keep [B, T] (1 = LoRA on at
+    that token, 0 = off). The base output is recomputed rather than d(x) subtracted, so keep = 1 everywhere reproduces
+    PEFT's output and keep = 0 everywhere the base layer, both exactly (no bf16 cancellation as in
+    remove_contributions). Costs one extra base-layer matmul per hooked module."""
+    mods = lora_modules(model)
+
+    def hook(mod, inp, out):
+        x = inp[0]
+        d = lora_delta(mod, x)
+        return (mod.base_layer(x) + d * keep.to(device=d.device, dtype=d.dtype)[..., None]).to(out.dtype)
+    return _hooks([mods[n].register_forward_hook(hook) for n in names])
+
+
 @contextlib.contextmanager
 def disable_locally(model, names):
     mods = lora_modules(model)

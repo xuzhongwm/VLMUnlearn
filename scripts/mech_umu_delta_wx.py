@@ -43,55 +43,14 @@ from vlmu.mech import tools  # noqa: E402
 from vlmu.mech.hooks import decoder_layers, layer_index, lm_parts, lora_modules  # noqa: E402
 from vlmu.models import get_adapter  # noqa: E402
 from vlmu.runs import free, model_dir, results_dir  # noqa: E402
-from vlmu.umu import encode_teacher_forced, load_umu, protocol_items, umu_run_id  # noqa: E402
+from vlmu.umu import encode_teacher_forced, load_umu, protocol_items, token_groups_umu as umu_token_groups, \
+    umu_run_id  # noqa: E402
 from vlmu.utils import Logger, atomic_write_json, read_json, tracked_run  # noqa: E402
 
 FORMS = {"forget": ("txt", "img", "txt+img"), "retain": ("txt", "img")}
 GROUPS = ("name", "image", "template", "last", "answer")
 ATTN, MLP, WRITERS = ("q_proj", "k_proj", "v_proj", "o_proj"), ("gate_proj", "up_proj", "down_proj"), ("o_proj", "down_proj")
 BANDS = {"L0-9": (0, 10), "L10-19": (10, 20), "L20-31": (20, 32)}
-
-
-def umu_token_groups(adapter, model, rows, batch, targets):
-    """Boolean [B, T] masks over a right-padded teacher-forced batch. Name tokens are found by character offsets in
-    the raw text (one <image> token) and shifted past the 576 expanded image tokens; rows whose re-tokenised text does
-    not match the batch get no name mask (counted in the return value)."""
-    tok = adapter.tok
-    ids, valid = batch["input_ids"], batch["attention_mask"].bool()
-    _, _, img_id = lm_parts(model)
-    image = (ids == img_id) & valid if img_id is not None else torch.zeros_like(valid)
-    name = torch.zeros_like(valid)
-    f = tools._first(targets)
-    last = torch.zeros_like(valid)
-    last[targets["b"][f], targets["pos"][f]] = True
-    pos = torch.arange(ids.shape[1], device=ids.device)[None, :]
-    last_pos = torch.full((ids.shape[0],), -1, device=ids.device, dtype=torch.long)
-    last_pos[targets["b"][f]] = targets["pos"][f]
-    answer = valid & (pos > last_pos[:, None])
-    mismatched = 0
-    for i, r in enumerate(rows):
-        who = r.get("name")
-        text = r["prompt"] + adapter.answer_suffix(r["correct_text"])
-        if not who or who not in r["prompt"]:
-            continue
-        enc = tok(text, add_special_tokens=True, return_offsets_mapping=True)
-        raw = enc["input_ids"]
-        n_img = int(image[i].sum())
-        if n_img:
-            k = raw.index(img_id)
-            expanded, shift = raw[:k] + [img_id] * n_img + raw[k + 1:], (lambda j, k=k, n=n_img: j + (n - 1 if j > k else 0))
-        else:
-            expanded, shift = raw, (lambda j: j)
-        start = int(valid[i].nonzero()[0])
-        if ids[i, valid[i]].tolist() != expanded:
-            mismatched += 1
-            continue
-        spans = [(m.start(), m.end()) for m in re.finditer(re.escape(who), r["prompt"])]
-        for j, (a, b) in enumerate(enc["offset_mapping"]):
-            if b > a and any(a < e and b > s for s, e in spans):
-                name[i, start + shift(j)] = True
-    template = valid & ~image & ~name & ~last & ~answer
-    return {"name": name, "image": image, "template": template, "last": last, "answer": answer}, mismatched
 
 
 @torch.no_grad()
@@ -130,8 +89,11 @@ def row_groups(res, j, n_layers):
         mlp = np.nansum([col(nk[k]) for k in MLP], axis=0)
         pw = [res["proj"].get(k, {}).get(g) for k in WRITERS]
         proj = np.nansum([col(v) for v in pw], axis=0) if all(v is not None for v in pw) else np.full(n_layers, np.nan)
-        attn[empty], mlp[empty], proj[empty] = np.nan, np.nan, np.nan
-        out[g] = {"norm_attn": attn.round(4).tolist(), "norm_mlp": mlp.round(4).tolist(), "proj_writers": proj.round(4).tolist()}
+        rk = [res.get("rel", {}).get(k, {}).get(g) for k in ATTN + MLP]
+        rel = nanmean([col(v) for v in rk if v is not None]) if any(v is not None for v in rk) else np.full(n_layers, np.nan)
+        attn[empty], mlp[empty], proj[empty], rel[empty] = np.nan, np.nan, np.nan, np.nan
+        out[g] = {"norm_attn": attn.round(4).tolist(), "norm_mlp": mlp.round(4).tolist(), "proj_writers": proj.round(4).tolist(),
+                  "rel_mean": rel.round(5).tolist()}
     return out
 
 
@@ -145,7 +107,7 @@ def summarize(per_row):
             have = [r[g] for r in rows if g in r and not np.all(np.isnan(np.array(r[g]["norm_mlp"], dtype=float)))]
             if not have:
                 continue
-            d = {k: nanmean([h[k] for h in have]) for k in ("norm_attn", "norm_mlp", "proj_writers")}
+            d = {k: nanmean([h[k] for h in have]) for k in ("norm_attn", "norm_mlp", "proj_writers", "rel_mean")}
             d["norm_all"] = d["norm_attn"] + d["norm_mlp"]
             summ[key][g] = {k: [None if np.isnan(v) else round(float(v), 4) for v in arr] for k, arr in d.items()}
             summ[key][g]["n_rows"] = len(have)
@@ -154,8 +116,10 @@ def summarize(per_row):
         for g, d in gs.items():
             arr = np.array([np.nan if v is None else v for v in d["norm_all"]], dtype=float)
             pr = np.array([np.nan if v is None else v for v in d["proj_writers"]], dtype=float)
+            rl = np.array([np.nan if v is None else v for v in d["rel_mean"]], dtype=float)
             bands[f"{key}/{g}"] = {b: {"norm": None if np.isnan(arr[a:z]).all() else float(np.nanmean(arr[a:z])),
-                                       "proj": None if np.isnan(pr[a:z]).all() else float(np.nanmean(pr[a:z]))}
+                                       "proj": None if np.isnan(pr[a:z]).all() else float(np.nanmean(pr[a:z])),
+                                       "rel": None if np.isnan(rl[a:z]).all() else float(np.nanmean(rl[a:z]))}
                                    for b, (a, z) in BANDS.items()}
     return summ, bands
 
@@ -274,16 +238,17 @@ def main():
                                                   "summary": summ, "bands": bands, "per_row": per_row})
         log(f"tokens per group: {dict((f'{m}/{g}', c) for (m, g), c in sorted(counts.items()) if c)}; "
             f"rows without a name mask (tokenisation mismatch): {mism}")
-        log("mean ||ΔW x|| per token (sum over the 7 LoRA modules), by layer band; [proj] = LoRA write along the answer "
-            "direction at that position (o + down)")
-        log(f"{'route/group':26s} " + " ".join(f"{b:>16s}" for b in BANDS))
+        log("mean ||ΔW x|| per token (sum over the 7 LoRA modules), by layer band; (rel) = mean ||ΔW x|| / ||W x|| over the "
+            "7 modules, in %; [proj] = LoRA write along the answer direction at that position (o + down)")
+        log(f"{'route/group':26s} " + " ".join(f"{b:>25s}" for b in BANDS))
         for k, v in bands.items():
             if k.endswith("/answer"):
                 continue
             cells = []
             for b in BANDS:
-                n, pj = v[b]["norm"], v[b]["proj"]
-                cells.append(f"{'-' if n is None else format(n, '.3f'):>7s} [{'-' if pj is None else format(pj, '+.3f'):>6s}]")
+                n, pj, rl = v[b]["norm"], v[b]["proj"], v[b].get("rel")
+                cells.append(f"{'-' if n is None else format(n, '.3f'):>6s} ({'-' if rl is None else format(100 * rl, '.2f'):>5s}%) "
+                             f"[{'-' if pj is None else format(pj, '+.3f'):>6s}]")
             log(f"{k:26s} " + " ".join(cells))
         tot = np.nansum([wnorm[k] for k in wnorm], axis=0)
         log("||B A||_F per layer band (sum over modules): " + ", ".join(

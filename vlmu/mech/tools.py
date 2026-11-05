@@ -205,17 +205,22 @@ def token_groups(adapter, model, rows, batch, texts, targets):
 _RESID_WRITERS = ("o_proj", "down_proj")
 
 
+def _hidden_out(o):
+    return o[0] if isinstance(o, tuple) else o
+
+
 @torch.no_grad()
 def delta_wx_norm(adapter, model, batch, targets, groups):
     """Per layer and module kind: mean ||d(x)|| over each token group ([L, B], NaN where the group
-    is empty), and for o_proj / down_proj the mean projection of d(x) on the unit answer direction."""
+    is empty), the mean relative size ||d(x)|| / ||W x|| ('rel'), and for o_proj / down_proj the mean
+    projection of d(x) on the unit answer direction."""
     norm, head, _ = lm_parts(model)
     f = _first(targets)
     u = head.weight[targets["tok"][f]].float() * norm.weight.float()
     u = u / u.norm(dim=-1, keepdim=True)  # [B, D]
     mods = lora_modules(model)
     n_layers = len(decoder_layers(model))
-    out = {"norm": {}, "proj": {}}
+    out = {"norm": {}, "proj": {}, "rel": {}}
 
     def gmean(v):  # v [B, T] -> {group: [B]}
         res = {}
@@ -230,8 +235,12 @@ def delta_wx_norm(adapter, model, batch, targets, groups):
 
         def hook(mod, inp, o):
             d = lora_delta(mod, inp[0]).float()
-            for g, v in gmean(d.norm(dim=-1)).items():
+            dn = d.norm(dim=-1)
+            for g, v in gmean(dn).items():
                 out["norm"].setdefault(kind, {}).setdefault(g, torch.full((n_layers, d.shape[0]), float("nan")))[li] = v.cpu()
+            rel = dn / (_hidden_out(o).float() - d).norm(dim=-1).clamp_min(1e-6)   # ||d(x)|| / ||W x||
+            for g, v in gmean(rel).items():
+                out["rel"].setdefault(kind, {}).setdefault(g, torch.full((n_layers, d.shape[0]), float("nan")))[li] = v.cpu()
             if kind in _RESID_WRITERS:
                 for g, v in gmean((d * u[:, None]).sum(-1)).items():
                     out["proj"].setdefault(kind, {}).setdefault(g, torch.full((n_layers, d.shape[0]), float("nan")))[li] = v.cpu()
