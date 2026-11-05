@@ -42,6 +42,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -52,7 +53,7 @@ from vlmu.config import base_parser, resolve  # noqa: E402
 from vlmu.evaluate import load_items, score, score_open  # noqa: E402
 from vlmu.models import LlavaAdapter  # noqa: E402
 from vlmu.runs import free, model_dir, processed_dir, results_dir  # noqa: E402
-from vlmu.utils import Logger, atomic_write_json, read_jsonl, tracked_run  # noqa: E402
+from vlmu.utils import Logger, append_jsonl, atomic_write_json, read_jsonl, tracked_run  # noqa: E402
 
 UMU_REPO = "chengyewang/UMU-bench"
 UMU_FILES = {"forget": "forget_10", "retain": "retain_90", "celeb": "real_person"}
@@ -118,13 +119,16 @@ def load_umu(root, n_retain, n_celeb, log):
     return out
 
 
+def image_bytes(img):
+    return img.get("bytes") if isinstance(img, dict) else img
+
+
 def save_image(img, path):
+    """Original bytes, no re-encoding (PIL detects the format from the content)."""
     if path.exists():
         return
-    from PIL import Image
-    data = img.get("bytes") if isinstance(img, dict) else img
     path.parent.mkdir(parents=True, exist_ok=True)
-    Image.open(io.BytesIO(data)).convert("RGB").save(path, quality=95)
+    path.write_bytes(image_bytes(img))
 
 
 def umu_items(dfs, image_root, log):
@@ -176,6 +180,95 @@ def umu_items(dfs, image_root, log):
         log(f"UMU items skipped: {dict(bad)}")
     log(f"UMU items: {len(mc)} MC, {len(op)} open")
     return mc, op
+
+
+# ---------------------------------------------------------------------------------------- UMU protocol
+# Re-implementation of UMU-bench eval.py:evaluate_classification (github.com/QDRhhhh/UMU-bench, LLaVA branch):
+# processor/tokenizer of the public base, weights in fp16, one item at a time, greedy, max_new_tokens=50,
+# the options as a python list in the prompt, the response = decoded text after "ASSISTANT:".
+# forget/retain use mode="default": correct iff response == correct option text (exact string match);
+# the real-person set uses difflib (closest option). Both are recorded here.
+def umu_protocol_items(dfs):
+    rows = []
+    for set_name in ("forget", "retain"):
+        if set_name not in dfs:
+            continue
+        for _, row in dfs[set_name].iterrows():
+            cls = _parse(row["Classify"])
+            uni = cls.get("unimodal", {})
+            mul = cls.get("muitimodal") or cls.get("multimodal") or {}
+            for key in uni:
+                if key not in mul:
+                    continue
+                opts = mul[key]["options"]
+                temp = [opts["A"], opts["B"], opts["C"], opts["D"]]
+                letter = uni[key]["answer"].split(".")[0]
+                base = {"set": set_name, "profile": row["ID"], "field": key, "pair_id": f"umu/{row['ID']}/{key}",
+                        "temp": temp, "correct_text": opts[letter]}
+                rows.append({**base, "uid": f"umuproto/{set_name}/{row['ID']}/{key}/img", "modality": "img",
+                             "image_bytes": image_bytes(row["image"]),
+                             "prompt": f"USER: <image>\n{mul[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"})
+                rows.append({**base, "uid": f"umuproto/{set_name}/{row['ID']}/{key}/txt", "modality": "txt",
+                             "image_bytes": None,
+                             "prompt": f"USER:\n{uni[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"})
+    return rows
+
+
+def select_answer(response, temp):
+    import difflib
+    sims = [difflib.SequenceMatcher(None, response, t).ratio() for t in temp]
+    return temp[sims.index(max(sims))]
+
+
+def run_umu_protocol(cfg, model_id, rows, out_path, log):
+    import torch
+    from PIL import Image
+    from transformers import AutoProcessor, LlavaForConditionalGeneration
+    out_path = Path(out_path)
+    done = {r["uid"]: r for r in read_jsonl(out_path)}
+    todo = [r for r in rows if r["uid"] not in done]
+    if todo:
+        processor = AutoProcessor.from_pretrained(cfg["model"]["id"])   # UMU: processor of the public base
+        model = LlavaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.float16).to("cuda").eval()
+        log(f"UMU protocol: {model_id}, fp16, processor {cfg['model']['id']}, {len(todo)} items, one at a time")
+        t0 = time.time()
+        for i, r in enumerate(todo):
+            if r["image_bytes"] is not None:
+                img = Image.open(io.BytesIO(r["image_bytes"])).convert("RGB")
+                inputs = processor(images=[img], text=r["prompt"], return_tensors="pt").to("cuda")
+                inputs["pixel_values"] = inputs["pixel_values"].half()
+            else:
+                inputs = processor.tokenizer(r["prompt"], return_tensors="pt").to("cuda")
+            with torch.no_grad():
+                out = model.generate(**inputs, max_new_tokens=50, do_sample=False)
+            text = processor.decode(out[0][2:], skip_special_tokens=True)
+            resp = text.split("ASSISTANT:")[1].strip() if "ASSISTANT:" in text else text.strip()
+            rec = {k: r[k] for k in ("uid", "set", "modality", "profile", "field", "pair_id", "correct_text")}
+            rec.update(response=resp, correct_exact=resp == r["correct_text"],
+                       correct_difflib=select_answer(resp, r["temp"]) == r["correct_text"])
+            append_jsonl(out_path, [rec])
+            done[r["uid"]] = rec
+            if (i + 1) % 50 == 0:
+                log(f"  {i + 1}/{len(todo)} ({time.time() - t0:.0f}s)")
+        model = None
+        free()
+    return [done[r["uid"]] for r in rows]
+
+
+def umu_protocol_summary(res):
+    """Per set and judge: Acc_uni, Acc_mul, Acc_any, Acc_all and the paper's AccF / AccR (Eq. 1)."""
+    out = {}
+    for judge in ("correct_exact", "correct_difflib"):
+        facts = collections.defaultdict(dict)
+        for r in res:
+            facts[(r["set"], r["pair_id"])][r["modality"]] = r[judge]
+        for s in sorted({k[0] for k in facts}):
+            fs = [v for (ss, _), v in facts.items() if ss == s and len(v) == 2]
+            uni, mul = np.mean([v["txt"] for v in fs]), np.mean([v["img"] for v in fs])
+            any_, all_ = np.mean([v["txt"] or v["img"] for v in fs]), np.mean([v["txt"] and v["img"] for v in fs])
+            out[f"{judge}/{s}"] = {"n_facts": len(fs), "uni": uni, "mul": mul, "any": any_, "all": all_,
+                                   "AccF": (uni + mul + any_) / 3, "AccR": (uni + mul + all_) / 3}
+    return out
 
 
 # ---------------------------------------------------------------------------------------- paired
@@ -273,6 +366,8 @@ def main():
     p.add_argument("--n-celeb", type=int, default=0, help="UMU real-person profiles (0 = skip)")
     p.add_argument("--open", action="store_true", help="also score UMU open-ended facts (greedy generation; slow)")
     p.add_argument("--paired", action="store_true", help="also score this repo's paired gate items (~2.7k MC)")
+    p.add_argument("--umu-protocol", action="store_true",
+                   help="instead: UMU-bench's own classification eval (generation + exact match) on --ckpt only")
     args = p.parse_args()
     cfg = resolve(args)
     assert cfg["model"]["family"] == "llava", "this script evaluates LLaVA checkpoints: use configs/llava/*.yaml"
@@ -286,6 +381,17 @@ def main():
         dfs = load_umu(cfg["paths"]["root"], args.n_retain, args.n_celeb, log)
         if cfg["debug"]:
             dfs = {k: v.head(3) for k, v in dfs.items()}
+        if args.umu_protocol:
+            res = run_umu_protocol(cfg, args.ckpt, umu_protocol_items(dfs), out_root / "umu_protocol" / "items.jsonl", log)
+            summ = umu_protocol_summary(res)
+            atomic_write_json(out_root / "umu_protocol" / "summary.json", {"ckpt": args.ckpt, "results": summ})
+            log("UMU protocol (paper Table 1, forget 10% Origin: Class AccF 0.8233; retain AccR 0.7752)")
+            log(f"{'judge/set':24s} {'n':>4s} {'uni':>6s} {'mul':>6s} {'any':>6s} {'all':>6s} {'AccF':>6s} {'AccR':>6s}")
+            for k, v in summ.items():
+                log(f"{k:24s} {v['n_facts']:4d} " + " ".join(f"{v[m]:6.3f}" for m in ("uni", "mul", "any", "all", "AccF", "AccR")))
+            for r in res[:6]:
+                log(f"  e.g. {r['uid']}: {r['response']!r} vs {r['correct_text']!r}")
+            return
         mc, op = umu_items(dfs, umu_root, log)
         subsets = {"umu": (mc, op if args.open else [])}
         image_roots = {"umu": umu_root}
