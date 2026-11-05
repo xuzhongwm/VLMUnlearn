@@ -46,7 +46,9 @@ def record(res, dc, step, spe):
            "forget_dc_txt": g(dcs, "forget", "uni"), "forget_dc_img": g(dcs, "forget", "mul"),
            "forget_dc_txtimg": g(dcs, "forget", "uni_img"),
            "retain_dc_txt": g(dcs, "retain", "uni"), "retain_dc_img": g(dcs, "retain", "mul"),
+           "seen_dc_txt": g(dcs, "retain_seen", "uni"), "seen_dc_img": g(dcs, "retain_seen", "mul"),
            "n_forget_dc": g(dcs, "forget", "n_facts"), "n_retain_dc": g(dcs, "retain", "n_facts"),
+           "n_seen_dc": g(dcs, "retain_seen", "n_facts"),
            "degen_txt": degeneracy(res, "txt"), "summary_all": allf}
     if rec["forget_dc_img"] is not None:
         rec["G"] = rec["forget_dc_img"] - rec["forget_dc_txt"]
@@ -55,14 +57,14 @@ def record(res, dc, step, spe):
 
 def print_table(records, log):
     log(f"{'step':>5s} {'epoch':>5s} | forget all {'txt':>5s} {'img':>5s} | forget dc {'txt':>5s} {'img':>5s} "
-        f"{'t+i':>5s} {'G':>6s} | retain dc {'txt':>5s} {'img':>5s} | {'degen':>5s}")
+        f"{'t+i':>5s} {'G':>6s} | retain dc {'txt':>5s} {'img':>5s} | seen dc {'txt':>5s} {'img':>5s} | {'degen':>5s}")
     f = lambda x: f"{x:5.2f}" if x is not None else "    -"  # noqa: E731
     for s in sorted(records):
         r = records[s]
         log(f"{s:5d} {r['epoch']:5.2f} |            {f(r['forget_all_txt'])} {f(r['forget_all_img'])} |"
             f"           {f(r['forget_dc_txt'])} {f(r['forget_dc_img'])} {f(r.get('forget_dc_txtimg'))} "
             f"{fmt(r.get('G'), '+6.2f'):>6s} |           {f(r['retain_dc_txt'])} {f(r['retain_dc_img'])} |"
-            f" {f(r.get('degen_txt'))}")
+            f"         {f(r.get('seen_dc_txt'))} {f(r.get('seen_dc_img'))} | {f(r.get('degen_txt'))}")
 
 
 def main():
@@ -92,7 +94,14 @@ def main():
             forget, retain = forget[:cfg.get("debug_rows", 16)], retain[:cfg.get("debug_rows", 16)]
         assert all(r["image"] is None for r in forget + retain), "text-only unlearning data contains images"
         assert not set(retain_unlearn_df["ID"]) & set(dfs["retain"]["ID"]), "retain-unlearn overlaps the retain readout"
-        eval_rows = protocol_items(dfs, forms={k: tuple(v) for k, v in cfg["eval"].get("forms", {}).items()})
+        # 'retain_seen': people the retain term trains on (the first n of the retain-unlearn set). Comparing them with the
+        # unseen readout people separates "the retain term protects only the people it was shown" from "forgetting
+        # became person-specific" (DEV-012).
+        n_seen = min(ucfg.get("n_retain_seen_eval", 20), len(retain_unlearn_df)) if retain else 0
+        if n_seen:
+            dfs["retain_seen"] = retain_unlearn_df.head(n_seen)
+        eval_rows = protocol_items(dfs, sets=("forget", "retain", "retain_seen"),
+                                   forms={k: tuple(v) for k, v in cfg["eval"].get("forms", {}).items()})
 
         # UMU vanilla as the base; processor of the public base (its processor_config lacks
         # num_additional_image_tokens; the tokenizer is the same)
@@ -132,7 +141,7 @@ def main():
             facts = fact_table(evaluate(0))
             atomic_write_json(dc_path, {"pair_ids": sorted(pid for (s, pid), v in facts.items() if v["txt"] and v["img"]),
                                         "n_by_set": {s: sum(1 for (ss, _), v in facts.items()
-                                                            if ss == s and v["txt"] and v["img"]) for s in ("forget", "retain")}})
+                                                            if ss == s and v["txt"] and v["img"]) for s in ("forget", "retain", "retain_seen")}})
         dc = set(read_json(dc_path)["pair_ids"])
         if 0 not in records:
             records[0] = record(evaluate(0), dc, 0, spe)
@@ -150,6 +159,7 @@ def main():
                 log(f"ckpt step {step} (epoch {rec['epoch']}): forget dc txt={fmt(rec['forget_dc_txt'])} "
                     f"img={fmt(rec['forget_dc_img'])} txt+img={fmt(rec.get('forget_dc_txtimg'))} G={fmt(rec.get('G'))} | "
                     f"retain dc txt={fmt(rec['retain_dc_txt'])} img={fmt(rec['retain_dc_img'])} | "
+                    f"seen dc txt={fmt(rec.get('seen_dc_txt'))} img={fmt(rec.get('seen_dc_img'))} | "
                     f"degen txt={fmt(rec.get('degen_txt'), '.2f')}")
             return {}
 

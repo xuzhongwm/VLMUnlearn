@@ -187,6 +187,13 @@ readout 31%); the retain term covers profiles 21–70, the readout profiles 1–
 0.5–0.7 after step 110. Next: a stronger, broader retain term, tagged `run_tag` (run ids may now carry a suffix,
 `vlmu/umu.py:umu_run_id`).
 
+**Run 3 (2026-11-05)** `umu_npo_rt_txt_lr5e-05_s0_rw3n200` (retain weight 3, 200 retain-unlearn people): step 150
+forget dc txt 0.923 / img 0.969 / txt+img 1.000, G +0.046; unseen retain dc txt 0.962; degen 0.14; NPO log-ratio −4.2
+(run 2: −15.7). Protecting other people removed most of the forgetting too: no setting so far gives person-specific
+forgetting of the name route. Open question (A) the spread to anyone asked by name is the mechanism vs (B) the protection
+was too weak. Run 4 (lr 1e-4, same retain) adds a **seen** retain readout (`retain_seen`: 20 of the people the retain term
+trains on) to separate the two.
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |
