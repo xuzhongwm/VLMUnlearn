@@ -157,6 +157,37 @@ def protocol_items(dfs, sets=("forget", "retain"), forms=None):
     return rows
 
 
+def encode_teacher_forced(adapter, rows):
+    """Right-padded teacher-forced batch: UMU-protocol prompt + ' {correct option text}</s>'; labels = answer
+    tokens only, end-of-sequence excluded (as Adapter.encode_train, with the protocol prompt instead of
+    adapter.prompt). Rows from protocol_items; batches must be homogeneous in image presence."""
+    import torch
+    from PIL import Image
+    imgs = [Image.open(io.BytesIO(r["image_bytes"])).convert("RGB") for r in rows if r["image_bytes"] is not None]
+    assert len(imgs) in (0, len(rows)), "batches must be homogeneous in image presence"
+    imgs = imgs or None
+    prompts = [r["prompt"] for r in rows]
+    full = [p + adapter.answer_suffix(r["correct_text"]) for p, r in zip(prompts, rows)]
+    b = adapter._process(full, imgs, "right")
+    pb = adapter._process(prompts, imgs, "right")
+    labels = b["input_ids"].clone()
+    labels[b["attention_mask"] == 0] = -100
+    for i, n in enumerate(pb["attention_mask"].sum(1).tolist()):
+        if not torch.equal(b["input_ids"][i, :n], pb["input_ids"][i, :n]):
+            raise ValueError(f"prompt is not a token prefix of prompt+answer: {rows[i]['uid']}")
+        labels[i, :n] = -100
+    labels[labels == adapter.tok.eos_token_id] = -100       # score the answer text, not the end of turn
+    b["labels"] = labels
+    return adapter.to_device(b)
+
+
+def first_target(t):
+    """Keep only each row's first target (the first answer token) of a tools.answer_targets dict."""
+    from .mech import tools
+    keep = tools._first(t)
+    return {"b": t["b"][keep], "pos": t["pos"][keep], "tok": t["tok"][keep], "n_rows": t["n_rows"]}
+
+
 def select_answer(response, temp):
     sims = [difflib.SequenceMatcher(None, response, t).ratio() for t in temp]
     return temp[sims.index(max(sims))]

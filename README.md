@@ -19,7 +19,12 @@ The current state is in [STATUS_README.md](STATUS_README.md), and the E0 data fa
 
 ## How to run (Google Colab, A100 40 GB preferred)
 
-Open [colab/run.ipynb](colab/run.ipynb) and set `REPO_URL` and `MODEL` in cell 1. Run the cells in
+> **Current work (2026-11-05): the UMU-Bench track** (DEV-011, DEV-012) runs from [colab/run.ipynb](colab/run.ipynb):
+> unlearning UMU's released LLaVA vanilla with name-only questions, then tool checks and the logit lens on a chosen
+> checkpoint. The MLLMU-Bench main track described below moved to
+> [colab/archive_mllmu_track.ipynb](colab/archive_mllmu_track.ipynb); its cell numbers below refer to that notebook.
+
+Open [colab/archive_mllmu_track.ipynb](colab/archive_mllmu_track.ipynb) and set `REPO_URL` and `MODEL` in cell 1. Run the cells in
 this order. **Cells 4–9 are real GPU runs; start them only after approval.**
 
 | # | cell | what it does | A100 runtime `qwen2vl` (pipeline check) | A100 runtime `llava` (primary) |
@@ -80,7 +85,7 @@ vlmu/report.py   transfer/G tables, GO rule, figure
 vlmu/mech/       hooks (contribution removal / replacement, layer patching) and the Milestone J checks
 configs/         data.yaml, models/*.yaml (with role), <model>/{vanilla,grid}.yaml, <model>/runs/*.yaml (one per run)
 scripts/         job entry points (each supports --debug, --root, --set key=value), data_audit.py, smoke_test.py
-colab/run.ipynb
+colab/run.ipynb (UMU track), colab/archive_mllmu_track.ipynb (MLLMU main track)
 analysis/        data_audit.md, official_mc_attributes.csv
 ```
 
