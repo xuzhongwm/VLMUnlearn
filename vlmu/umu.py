@@ -59,6 +59,11 @@ def clean_ref(ans):
     return a[:-1].strip() if a.endswith(".") else a
 
 
+def profile_name(row):
+    """The profile's name (Biography.Name), as written in its unimodal (name-based) questions."""
+    return parse(row["Biography"]).get("Name")
+
+
 def image_bytes(img):
     return img.get("bytes") if isinstance(img, dict) else img
 
@@ -130,7 +135,7 @@ def protocol_items(dfs, sets=("forget", "retain"), forms=None):
                 opts = mul[key]["options"]
                 temp = [opts["A"], opts["B"], opts["C"], opts["D"]]
                 base = {"set": set_name, "profile": row["ID"], "field": key, "pair_id": f"umu/{row['ID']}/{key}",
-                        "temp": temp, "correct_text": opts[uni[key]["answer"].split(".")[0]]}
+                        "name": profile_name(row), "temp": temp, "correct_text": opts[uni[key]["answer"].split(".")[0]]}
                 img = image_bytes(row["image"])
                 variants = {
                     "img": (img, f"USER: <image>\n{mul[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"),
@@ -261,6 +266,7 @@ def classify_mc_rows(dfs, image_root, sets=("forget",), forms=("txt", "img")):
                 for m in forms:
                     rows.append({"uid": f"umumc/{set_name}/{row['ID']}/{key}/{m}", "set": set_name, "split": "umu",
                                  "source": "umu_mc", "modality": m, "profile": row["ID"], "field": key,
+                                 "name": profile_name(row),   # tools.token_groups: the name-token group
                                  "pair_id": f"umu/{row['ID']}/{key}", "question": q[m],
                                  "image": None if m == "txt" else rel,
                                  "options": {k: str(v) for k, v in u["options"].items()}, "answer": ans})
