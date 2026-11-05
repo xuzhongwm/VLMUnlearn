@@ -230,6 +230,26 @@ secondary. Same for the 26 retain dc facts. Also mean ||A x|| (LoRA input projec
   real portraits) halves G at matched forget-name drop (±0.05) without a larger retain-name drop.
 Each prediction is reported as passed / failed against these thresholds. Primary checkpoint: run 2 step 150; replication on
 a second checkpoint before any claim. Plan and ordering: research.md, "2026-11-05 方向更新".
+**Outcome, run 2 step 150** (`scripts/mech_umu_form_sweep.py`; figure `proposal/figures/form_sweep_run2_step150.png`;
+F_train forget 14.42 / retain 12.06 nats):
+- P1 **pass**: R forget own portrait 1.00, blank image 0.88, other portrait 0.90, filler text 0.83 (portrait question 1.00).
+- P2 **fail (narrowly)**: first name 0.15, last name 0.24, "Mr./Ms. <last>" 0.28 (two of three above 0.2); reversed −0.02.
+  Forgetting mostly transfers across name variants, but not fully.
+- P3 **pass**: option list 0.92, A–D letters 0.73, no frame 0.65; cloze 0.19, system prompt 0.24, paraphrases −0.17 /
+  −0.33 (forgetting stronger than in the training form).
+- P4 **pass**: Spearman 0.98 over 16 forms.
+- P5 **pass**: Spearman 0.77 (16 forms; the figure panel shows 0.79 because it includes the base point). Mainly driven by
+  the image-context forms (low ||A x||, little forgetting); among text-only forms the ordering is weak (system prompt has
+  low ||A x|| but strong forgetting).
+- Generation (keyword hit, vanilla → unlearned, forget): base 0.77 → 0.37; blank image 0.75 → 0.69; filler 0.71 → 0.48;
+  no frame 0.82 → 0.43; option list 1.00 → 0.82; letters 0.55 → 0.62; paraphrases ≈ 0.75 → 0.35 / 0.40.
+**Caveats (to resolve before claims):** (1) option-list forms contain the answer text, so copying can inflate R; needs
+an answer-absent / shuffled-option control. (2) log p vs generation disagree for filler text (R 0.83 but generation
+recovers only ≈ 40% of the base drop) and for no frame (R 0.65, generation drop ≈ base) — blank image is the only
+non-portrait form that escapes on both readouts, so "any prefix escapes" is not yet established; the modality of the
+prefix may still matter. (3) Paraphrase R < 0 is a log-p-scale effect; generation drops are similar to base.
+(4) one checkpoint. Next: prefix length/position sweep (filler 16–576 tokens, image before/after question),
+answer-absent option control, replication on a second checkpoint, then P6.
 
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
