@@ -9,6 +9,7 @@ Paths:
 import argparse
 import copy
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -42,12 +43,18 @@ def load_yaml(path) -> dict:
     return deep_merge(merged, cfg)
 
 
+_SCI = re.compile(r"[-+]?(\d+\.?\d*|\.\d+)[eE][-+]?\d+")
+
+
 def set_dotted(cfg: dict, key: str, value):
     parts = key.split(".")
     d = cfg
     for p in parts[:-1]:
         d = d.setdefault(p, {})
-    d[parts[-1]] = yaml.safe_load(value) if isinstance(value, str) else value
+    v = yaml.safe_load(value) if isinstance(value, str) else value
+    if isinstance(v, str) and _SCI.fullmatch(v):   # YAML 1.1 reads "5e-5" (no dot) as a string
+        v = float(v)
+    d[parts[-1]] = v
 
 
 def base_parser(desc: str, config_required=True) -> argparse.ArgumentParser:

@@ -175,6 +175,18 @@ fact-specific forgetting; steps 150–300 are not used. Step 75 is not degenerat
   (first answer token, and the summed answer tokens without EOS) under the UMU-protocol prompt
   (`scripts/mech_umu_lens.py`).
 
+**DEV-012 results (2026-11-05).** `umu_npo_rt_txt_lr2e-05_s0` barely forgot (forget dc txt 0.985 at step 76; stopped).
+`umu_npo_rt_txt_lr5e-05_s0` (`--set train.lr=5.0e-5`), doubly-correct facts as in run 1 (65 / 26):
+| step (epoch) | forget dc txt | img | txt+img | G | retain dc txt | retain dc img | degen txt |
+|---|---|---|---|---|---|---|---|
+| 114 (1.5) | 0.815 | 0.969 | 0.969 | +0.154 | 0.885 | 1.000 | 0.13 |
+| 150 (2) | 0.631 | 0.969 | 0.969 | +0.338 | 0.692 | 1.000 | 0.13 |
+No collapse (degen flat). txt+img equals img at every checkpoint in both runs: with the portrait present, the
+name-based question is not suppressed. Specificity is still weak at step 150 (text-route loss: forget 37%, retain
+readout 31%); the retain term covers profiles 21–70, the readout profiles 1–20. `retain_nll` rose from ~0.1 to
+0.5–0.7 after step 110. Next: a stronger, broader retain term, tagged `run_tag` (run ids may now carry a suffix,
+`vlmu/umu.py:umu_run_id`).
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |

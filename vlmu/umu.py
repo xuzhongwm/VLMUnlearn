@@ -59,6 +59,14 @@ def clean_ref(ans):
     return a[:-1].strip() if a.endswith(".") else a
 
 
+def umu_run_id(cfg):
+    """umu_<method>_<modality>_lr<lr>_s<seed>[_<run_tag>]; run_tag separates runs that differ only in other
+    settings (e.g. retain weight), which would otherwise share a folder and be skipped as DONE."""
+    u, t = cfg["unlearn"], cfg["train"]
+    tag = cfg.get("run_tag")
+    return f"umu_{u['method']}_{u['modality']}_lr{float(t['lr']):.0e}_s{u['seed']}" + (f"_{tag}" if tag else "")
+
+
 def profile_name(row):
     """The profile's name (Biography.Name), as written in its unimodal (name-based) questions."""
     return parse(row["Biography"]).get("Name")

@@ -16,11 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from vlmu.config import base_parser, resolve  # noqa: E402
 from vlmu.mech.checks import run_milestone_j  # noqa: E402
 from vlmu.runs import model_dir  # noqa: E402
+from vlmu.umu import umu_run_id  # noqa: E402
 
-
-def umu_run_id(cfg):
-    u, t = cfg["unlearn"], cfg["train"]
-    return f"umu_{u['method']}_{u['modality']}_lr{t['lr']:.0e}_s{u['seed']}"
 
 
 if __name__ == "__main__":

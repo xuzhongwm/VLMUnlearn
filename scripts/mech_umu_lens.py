@@ -34,15 +34,11 @@ from vlmu.mech import tools  # noqa: E402
 from vlmu.mech.hooks import decoder_layers  # noqa: E402
 from vlmu.models import get_adapter  # noqa: E402
 from vlmu.runs import free, model_dir, results_dir  # noqa: E402
-from vlmu.umu import load_umu, protocol_items  # noqa: E402
+from vlmu.umu import load_umu, protocol_items, umu_run_id  # noqa: E402
 from vlmu.utils import Logger, atomic_write_json, read_json, read_jsonl, tracked_run  # noqa: E402
 
 FORMS = {"forget": ("txt", "img", "txt+img"), "retain": ("txt", "img")}
 
-
-def umu_run_id(cfg):
-    u, t = cfg["unlearn"], cfg["train"]
-    return f"umu_{u['method']}_{u['modality']}_lr{t['lr']:.0e}_s{u['seed']}"
 
 
 def encode_tf(adapter, rows):

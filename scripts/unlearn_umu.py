@@ -14,7 +14,7 @@ Per checkpoint (checkpoints.jsonl, printed as a table at the end):
   degen         share of the most frequent text-only response (1.0 = one answer to everything)
 LoRA adapters are saved at every checkpoint (ckpt/step<N>/, ~80 MB each) for the mechanism analyses.
 
-  python scripts/unlearn_umu.py --config configs/llava/umu_npo_rt.yaml [--set train.lr=1e-5] [--debug]
+  python scripts/unlearn_umu.py --config configs/llava/umu_npo_rt.yaml [--set train.lr=1e-5] [--set run_tag=rw3 ...] [--debug]
 """
 import sys
 from pathlib import Path
@@ -26,7 +26,7 @@ from vlmu.models import get_adapter  # noqa: E402
 from vlmu.runs import free, model_dir, results_dir  # noqa: E402
 from vlmu.train import NPO_METHODS, RETAIN_METHODS, BatchPlan, Ctx, clear_resume, save_adapter, train  # noqa: E402
 from vlmu.umu import degeneracy, fact_table, generate_protocol, load_umu, protocol_items, protocol_summary, \
-    unlearn_rows  # noqa: E402
+    umu_run_id, unlearn_rows  # noqa: E402
 from vlmu.utils import Logger, append_jsonl, atomic_write_json, is_done, mark_done, read_json, read_jsonl, \
     seed_all, tracked_run  # noqa: E402
 
@@ -70,7 +70,7 @@ def main():
     cfg = resolve(args)
     u, tcfg, ucfg = cfg["unlearn"], cfg["train"], cfg["umu"]
     assert u["method"] in METHODS and u["modality"] == "txt", f"supported: {METHODS} x txt"
-    run_id = f"umu_{u['method']}_{u['modality']}_lr{tcfg['lr']:.0e}_s{u['seed']}"
+    run_id = umu_run_id(cfg)
     run_dir = model_dir(cfg) / "umu_unlearn" / run_id
     log = Logger(run_dir / "log.txt")
     if is_done(run_dir):
