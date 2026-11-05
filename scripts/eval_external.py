@@ -39,6 +39,7 @@ import ast
 import collections
 import io
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -224,6 +225,13 @@ def run_one(cfg, tag, model_id, fmt, subsets, image_roots, out_root, log):
     out = out_root / f"{tag}__{fmt}"
     mcfg = {**cfg["model"], "id": model_id, "processor_id": model_id}
     adapter = FORMATS[fmt](mcfg)
+    proc = adapter.processor
+    if getattr(proc, "num_additional_image_tokens", None) == 0 and \
+            getattr(proc, "vision_feature_select_strategy", None) == "default":
+        # processor_config saved with transformers < 4.47 lacks this field; CLIP ViT-L/14 has a CLS token,
+        # so without it the processor expands <image> to 575 tokens for 576 image features.
+        proc.num_additional_image_tokens = 1
+        log("processor: set num_additional_image_tokens=1 (missing in the checkpoint's processor_config)")
     log(f"=== {tag} ({model_id}), prompt format {fmt}")
     log("example prompt: " + repr(adapter.prompt("<question>", True)))
     model = adapter.load_model()
@@ -273,7 +281,8 @@ def main():
     out_root = model_dir(cfg) / "external" / args.tag
     log = Logger(out_root / "log.txt")
     with tracked_run(results_dir(cfg), out_root, f"{cfg['model']['name']}_external_{args.tag}", "eval_external"):
-        umu_root = Path(cfg["paths"]["out"]) / "data" / "umu"
+        # images on fast local disk when available (re-extracted from the parquet after a disconnect)
+        umu_root = Path(os.environ.get("VLMU_LOCAL_CACHE") or Path(cfg["paths"]["out"]) / "data") / "umu"
         dfs = load_umu(cfg["paths"]["root"], args.n_retain, args.n_celeb, log)
         if cfg["debug"]:
             dfs = {k: v.head(3) for k, v in dfs.items()}
