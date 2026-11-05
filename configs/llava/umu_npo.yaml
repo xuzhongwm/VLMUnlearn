@@ -1,0 +1,24 @@
+# T->M unlearning on UMU-Bench (DEV-011). Start = UMU's released vanilla `chengyewang/llava_smu_ft` (LLaVA-1.5-7B,
+# full merged weights; reproduces the paper's Origin forget-10% Class AccF 0.823). A fresh LoRA on its LM linear
+# layers; text-only NPO on forget_10 UM_QA (50 profiles x 12 QA = 600 rows, no image); NPO reference = the
+# checkpoint itself (adapter disabled). Readout = UMU protocol (vlmu/umu.py), batched, at step 0 (the run's own
+# baseline and doubly-correct set) and every eval_every_epochs.
+#   python scripts/unlearn_umu.py --config configs/llava/umu_npo.yaml [--set train.lr=2e-5] [--debug]
+base: [../models/llava.yaml]   # LoRA r16/alpha16 on LM linear layers, as the main grid
+umu:
+  ckpt: chengyewang/llava_smu_ft
+  forget_split: forget_10
+  n_retain_eval: 20            # first 20 retain_90 profiles (40 facts) for the retain readout
+unlearn: {method: npo, modality: txt, seed: 0, npo_beta: 0.4}   # method in {npo, ga}; beta as UMU's NPO.py and our grid
+train:
+  lr: 5.0e-5                   # TODO(confirm): our grid's middle lr; UMU's own NPO uses 6.2e-6 with LoRA r64/alpha32
+  batch_size: 8
+  max_epochs: 4                # UMU NPO.py default; linear decay over this horizon
+  eval_every_epochs: 1.0       # ~10 min run on L4; --set train.eval_every_epochs=0.5 for a finer trajectory
+  warmup_ratio: 0.0
+  log_every: 10
+eval: {gen_batch: {img: 8, txt: 32}}   # batched UMU-protocol generation (L4-safe)
+debug_rows: 16
+debug_overrides:
+  umu: {n_retain_eval: 2}
+  train: {max_steps: 4, eval_every_steps: 2, log_every: 1}

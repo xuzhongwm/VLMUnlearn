@@ -133,6 +133,28 @@ train for more epochs to raise accuracy, but do not keep training indefinitely t
   the pretrained model also answers correctly (`runs/<model>/pretrained/prior_eval/`), a minimum margin, and a
   minimum number of facts per confirmation entity.
 
+### DEV-011 — 2026-11-05 — UMU-Bench track: UMU's released vanilla and UMU's readout (decided by: user)
+Both own vanillas failed to inject the facts as measured by letter-logit MC (Qwen2-VL-2B, MLLMU paired items:
+img 0.379 / txt 0.439 after plateau). A parallel track on UMU-Bench (Wang et al., NeurIPS 2025 D&B; same 500
+fictitious profiles as MLLMU-Bench, with per-fact paired unimodal / multimodal questions):
+- **Starting model:** UMU's released fine-tune `chengyewang/llava_smu_ft` (LLaVA-1.5-7B, LoRA merged, fp16; paper
+  App. B: LLaMA-Factory, 5 epochs, lr 1e-4, batch 6). Its training QA attach the portrait to every item, including
+  the name-based UM_QA, so it never saw a text-only (no-image) input. Its processor_config lacks
+  `num_additional_image_tokens`; the public base processor is used (same tokenizer).
+- **Readout:** UMU's own classification protocol (`vlmu/umu.py`): options listed in the prompt, greedy generation,
+  correct iff the response equals the correct option text. Re-implemented at batch size 1 / fp16 it reproduces the
+  paper's Table 1 Origin forget-10% Class AccF (0.823 vs 0.8233). Per form on forget_10: txt 0.75, img 0.81, both
+  0.65. Letter-logit MC on the same items gives txt 0.51 / img 0.53 (`scripts/eval_external.py`, 5c): the letter
+  readout, not the knowledge, failed. This replaces letter-logit MC as the behavioural readout on this track; the
+  mechanism tools' target must move from the option letter to the answer text (not yet changed).
+- **Unlearning:** fresh LoRA (r16/α16, LM linear layers) on that checkpoint; text-only NPO (β 0.4, reference = the
+  checkpoint) on forget_10 UM_QA (600 rows); lr 5e-5 (`TODO(confirm)`), batch 8, 4 epochs; UMU-protocol readout,
+  batched (left padding, bf16), at step 0 and every epoch. Doubly-correct facts = both forms correct at the run's
+  own step 0. `configs/llava/umu_npo.yaml`, `scripts/unlearn_umu.py`.
+- **Not carried over (yet):** the 20/30 calibration/confirmation entity split, the accuracy window selection,
+  GA_Diff with a retain set, the seed grid. forget_10 gives 65 doubly-correct facts at batch-1 fp16; forget_15
+  would give more (not checked whether it contains forget_10).
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |

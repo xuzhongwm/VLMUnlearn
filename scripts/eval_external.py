@@ -35,14 +35,9 @@ profiles (300 + 120 items). Everything else is opt-in:
   python scripts/eval_external.py --config configs/llava/vanilla.yaml --set eval.batch_size_img=8
   ... --runs ckpt:vicuna ckpt:repo base:vicuna --n-retain 50 --n-celeb 50 --open --paired   # full (~1.5-2 h on L4)
 """
-import ast
 import collections
-import io
-import json
 import os
-import re
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -53,10 +48,10 @@ from vlmu.config import base_parser, resolve  # noqa: E402
 from vlmu.evaluate import load_items, score, score_open  # noqa: E402
 from vlmu.models import LlavaAdapter  # noqa: E402
 from vlmu.runs import free, model_dir, processed_dir, results_dir  # noqa: E402
-from vlmu.utils import Logger, append_jsonl, atomic_write_json, read_jsonl, tracked_run  # noqa: E402
+from vlmu.umu import clean_ref, generate_protocol, letter, load_umu, parse, protocol_items, \
+    protocol_summary, save_image  # noqa: E402
+from vlmu.utils import Logger, atomic_write_json, read_jsonl, tracked_run  # noqa: E402
 
-UMU_REPO = "chengyewang/UMU-bench"
-UMU_FILES = {"forget": "forget_10", "retain": "retain_90", "celeb": "real_person"}
 OPEN_FIELDS = ("Born", "Birth", "Occupation", "Height", "Education", "Annual_Salary", "Residence")
 PAIRED_SUITE = [("forget", None, "paired", ("img", "txt")), ("retain", "calibration", "paired", ("img", "txt"))]
 REFERENT_SWAP = [("the pictured person's", "this person's"), ("the pictured person", "this person")]
@@ -74,63 +69,7 @@ class VicunaLlavaAdapter(LlavaAdapter):
 FORMATS = {"vicuna": VicunaLlavaAdapter, "repo": LlavaAdapter}
 
 
-# ---------------------------------------------------------------------------------------- UMU data
-def _parse(v):
-    """str (json / python repr) or nested dict -> nested dict without None leaves. Parquet struct
-    columns carry the union of keys over all rows, so absent fields come back as None."""
-    if isinstance(v, str):
-        try:
-            v = json.loads(v)
-        except json.JSONDecodeError:
-            v = ast.literal_eval(v)
-    return _drop_none(v) if isinstance(v, dict) else {}
-
-
-def _drop_none(d):
-    return {k: _drop_none(x) if isinstance(x, dict) else x for k, x in d.items() if x is not None}
-
-
-def _letter(ans):
-    m = re.match(r"\s*\(?([A-D])\b", str(ans))
-    return m.group(1) if m else None
-
-
-def _clean_ref(ans):
-    a = str(ans).strip()
-    return a[:-1].strip() if a.endswith(".") else a
-
-
-def load_umu(root, n_retain, n_celeb, log):
-    """{set: dataframe} with at most the requested number of profiles, sorted by ID."""
-    import pandas as pd
-    from huggingface_hub import hf_hub_download
-    out = {}
-    for set_name, sub in UMU_FILES.items():
-        n = {"forget": None, "retain": n_retain, "celeb": n_celeb}[set_name]
-        if n == 0:
-            continue
-        p = hf_hub_download(UMU_REPO, f"{sub}/train-00000-of-00001.parquet", repo_type="dataset",
-                            local_dir=str(Path(root) / "data" / "raw" / "umu"))
-        df = pd.read_parquet(p)
-        df["ID"] = df["ID"].astype(str).str.zfill(3)
-        df = df.sort_values("ID")
-        out[set_name] = df if n is None else df.head(n)
-        log(f"UMU {sub}: {len(df)} profiles, using {len(out[set_name])}")
-    return out
-
-
-def image_bytes(img):
-    return img.get("bytes") if isinstance(img, dict) else img
-
-
-def save_image(img, path):
-    """Original bytes, no re-encoding (PIL detects the format from the content)."""
-    if path.exists():
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(image_bytes(img))
-
-
+# ---------------------------------------------------------------------------------------- UMU MC items
 def umu_items(dfs, image_root, log):
     """UMU rows -> MC rows (score) and open rows (score_open) in this repo's item format."""
     mc, op = [], []
@@ -141,18 +80,18 @@ def umu_items(dfs, image_root, log):
             rel = f"images/{set_name}/{pid}.jpg"
             save_image(row["image"], Path(image_root) / rel)
             base = {"set": set_name, "split": "umu", "profile": pid}
-            cls = _parse(row["Classify"])
+            cls = parse(row["Classify"])
             uni = cls.get("unimodal", {})
             multi = cls.get("multimodal") or cls.get("muitimodal") or {}  # dataset key is misspelled
             for field, u in uni.items():
-                ans = _letter(u.get("answer"))
+                ans = letter(u.get("answer"))
                 opts = {k: str(v) for k, v in (u.get("options") or {}).items()}
                 if ans not in opts:
                     bad["mc_answer_not_option"] += 1
                     continue
                 forms = [("txt", u["question"], None), ("txt+img", u["question"], rel)]
                 m = multi.get(field)
-                if m and _letter(m.get("answer")) == ans and m.get("options") == u.get("options"):
+                if m and letter(m.get("answer")) == ans and m.get("options") == u.get("options"):
                     forms.append(("img", m["question"], rel))
                 else:
                     bad["mc_no_matching_multimodal"] += 1
@@ -162,10 +101,10 @@ def umu_items(dfs, image_root, log):
                                "question": q, "image": img, "options": opts, "answer": ans})
             if set_name == "celeb":
                 continue
-            mm, um = _parse(row["MM_QA"]), _parse(row["UM_QA"])
+            mm, um = parse(row["MM_QA"]), parse(row["UM_QA"])
             fields = [f for f in OPEN_FIELDS if f in mm.get("question", {}) and f in um.get("question", {})]
             for field in fields + ["Name"]:
-                ref = _clean_ref(mm["answer"].get(field, ""))
+                ref = clean_ref(mm["answer"].get(field, ""))
                 if not ref or ref.upper() == "NA":
                     bad["open_no_reference"] += 1
                     continue
@@ -183,92 +122,20 @@ def umu_items(dfs, image_root, log):
 
 
 # ---------------------------------------------------------------------------------------- UMU protocol
-# Re-implementation of UMU-bench eval.py:evaluate_classification (github.com/QDRhhhh/UMU-bench, LLaVA branch):
-# processor/tokenizer of the public base, weights in fp16, one item at a time, greedy, max_new_tokens=50,
-# the options as a python list in the prompt, the response = decoded text after "ASSISTANT:".
-# forget/retain use mode="default": correct iff response == correct option text (exact string match);
-# the real-person set uses difflib (closest option). Both are recorded here.
-def umu_protocol_items(dfs):
-    rows = []
-    for set_name in ("forget", "retain"):
-        if set_name not in dfs:
-            continue
-        for _, row in dfs[set_name].iterrows():
-            cls = _parse(row["Classify"])
-            uni = cls.get("unimodal", {})
-            mul = cls.get("muitimodal") or cls.get("multimodal") or {}
-            for key in uni:
-                if key not in mul:
-                    continue
-                opts = mul[key]["options"]
-                temp = [opts["A"], opts["B"], opts["C"], opts["D"]]
-                letter = uni[key]["answer"].split(".")[0]
-                base = {"set": set_name, "profile": row["ID"], "field": key, "pair_id": f"umu/{row['ID']}/{key}",
-                        "temp": temp, "correct_text": opts[letter]}
-                rows.append({**base, "uid": f"umuproto/{set_name}/{row['ID']}/{key}/img", "modality": "img",
-                             "image_bytes": image_bytes(row["image"]),
-                             "prompt": f"USER: <image>\n{mul[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"})
-                rows.append({**base, "uid": f"umuproto/{set_name}/{row['ID']}/{key}/txt", "modality": "txt",
-                             "image_bytes": None,
-                             "prompt": f"USER:\n{uni[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"})
-    return rows
-
-
-def select_answer(response, temp):
-    import difflib
-    sims = [difflib.SequenceMatcher(None, response, t).ratio() for t in temp]
-    return temp[sims.index(max(sims))]
-
-
 def run_umu_protocol(cfg, model_id, rows, out_path, log):
+    """UMU eval.py exactly: processor of the public base, fp16 weights, one item at a time (vlmu/umu.py)."""
     import torch
-    from PIL import Image
     from transformers import AutoProcessor, LlavaForConditionalGeneration
-    out_path = Path(out_path)
-    done = {r["uid"]: r for r in read_jsonl(out_path)}
-    todo = [r for r in rows if r["uid"] not in done]
-    if todo:
-        processor = AutoProcessor.from_pretrained(cfg["model"]["id"])   # UMU: processor of the public base
-        model = LlavaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.float16).to("cuda").eval()
-        log(f"UMU protocol: {model_id}, fp16, processor {cfg['model']['id']}, {len(todo)} items, one at a time")
-        t0 = time.time()
-        for i, r in enumerate(todo):
-            if r["image_bytes"] is not None:
-                img = Image.open(io.BytesIO(r["image_bytes"])).convert("RGB")
-                inputs = processor(images=[img], text=r["prompt"], return_tensors="pt").to("cuda")
-                inputs["pixel_values"] = inputs["pixel_values"].half()
-            else:
-                inputs = processor.tokenizer(r["prompt"], return_tensors="pt").to("cuda")
-            with torch.no_grad():
-                out = model.generate(**inputs, max_new_tokens=50, do_sample=False)
-            text = processor.decode(out[0][2:], skip_special_tokens=True)
-            resp = text.split("ASSISTANT:")[1].strip() if "ASSISTANT:" in text else text.strip()
-            rec = {k: r[k] for k in ("uid", "set", "modality", "profile", "field", "pair_id", "correct_text")}
-            rec.update(response=resp, correct_exact=resp == r["correct_text"],
-                       correct_difflib=select_answer(resp, r["temp"]) == r["correct_text"])
-            append_jsonl(out_path, [rec])
-            done[r["uid"]] = rec
-            if (i + 1) % 50 == 0:
-                log(f"  {i + 1}/{len(todo)} ({time.time() - t0:.0f}s)")
-        model = None
-        free()
-    return [done[r["uid"]] for r in rows]
-
-
-def umu_protocol_summary(res):
-    """Per set and judge: Acc_uni, Acc_mul, Acc_any, Acc_all and the paper's AccF / AccR (Eq. 1)."""
-    out = {}
-    for judge in ("correct_exact", "correct_difflib"):
-        facts = collections.defaultdict(dict)
-        for r in res:
-            facts[(r["set"], r["pair_id"])][r["modality"]] = r[judge]
-        for s in sorted({k[0] for k in facts}):
-            fs = [v for (ss, _), v in facts.items() if ss == s and len(v) == 2]
-            uni, mul = np.mean([v["txt"] for v in fs]), np.mean([v["img"] for v in fs])
-            any_, all_ = np.mean([v["txt"] or v["img"] for v in fs]), np.mean([v["txt"] and v["img"] for v in fs])
-            out[f"{judge}/{s}"] = {"n_facts": len(fs), "uni": uni, "mul": mul, "any": any_, "all": all_,
-                                   "AccF": (uni + mul + any_) / 3, "AccR": (uni + mul + all_) / 3}
-    return out
+    scored = {x["uid"] for x in read_jsonl(out_path)}
+    if all(r["uid"] in scored for r in rows):
+        return generate_protocol(None, None, rows, out_path, log)
+    processor = AutoProcessor.from_pretrained(cfg["model"]["id"])
+    model = LlavaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.float16).to("cuda").eval()
+    log(f"UMU protocol: {model_id}, fp16, processor {cfg['model']['id']}, one item at a time")
+    res = generate_protocol(model, processor, rows, out_path, log, batch_size=1, dtype=torch.float16)
+    model = None
+    free()
+    return res
 
 
 # ---------------------------------------------------------------------------------------- paired
@@ -382,8 +249,8 @@ def main():
         if cfg["debug"]:
             dfs = {k: v.head(3) for k, v in dfs.items()}
         if args.umu_protocol:
-            res = run_umu_protocol(cfg, args.ckpt, umu_protocol_items(dfs), out_root / "umu_protocol" / "items.jsonl", log)
-            summ = umu_protocol_summary(res)
+            res = run_umu_protocol(cfg, args.ckpt, protocol_items(dfs), out_root / "umu_protocol" / "items.jsonl", log)
+            summ = protocol_summary(res)
             atomic_write_json(out_root / "umu_protocol" / "summary.json", {"ckpt": args.ckpt, "results": summ})
             log("UMU protocol (paper Table 1, forget 10% Origin: Class AccF 0.8233; retain AccR 0.7752)")
             log(f"{'judge/set':24s} {'n':>4s} {'uni':>6s} {'mul':>6s} {'any':>6s} {'all':>6s} {'AccF':>6s} {'AccR':>6s}")
