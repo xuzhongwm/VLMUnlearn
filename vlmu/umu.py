@@ -110,12 +110,16 @@ def unlearn_rows(df, form="txt"):
 
 
 # ---------------------------------------------------------------------------------------- UMU protocol
-def protocol_items(dfs, sets=("forget", "retain")):
-    """Classify items as UMU's eval.py builds them: one img (multimodal) + one txt (unimodal) row per fact."""
+def protocol_items(dfs, sets=("forget", "retain"), forms=None):
+    """Classify items as UMU's eval.py builds them: one img (multimodal) + one txt (unimodal) row per fact.
+    forms {set: tuple} may add 'txt+img' (the unimodal, name-based question WITH the portrait; not in UMU):
+    it separates 'the name triggers the forgetting' from 'a missing image triggers it'."""
+    forms = forms or {}
     rows = []
     for set_name in sets:
         if set_name not in dfs:
             continue
+        want = forms.get(set_name, ("img", "txt"))
         for _, row in dfs[set_name].iterrows():
             cls = parse(row["Classify"])
             uni = cls.get("unimodal", {})
@@ -127,12 +131,16 @@ def protocol_items(dfs, sets=("forget", "retain")):
                 temp = [opts["A"], opts["B"], opts["C"], opts["D"]]
                 base = {"set": set_name, "profile": row["ID"], "field": key, "pair_id": f"umu/{row['ID']}/{key}",
                         "temp": temp, "correct_text": opts[uni[key]["answer"].split(".")[0]]}
-                rows.append({**base, "uid": f"umuproto/{set_name}/{row['ID']}/{key}/img", "modality": "img",
-                             "image_bytes": image_bytes(row["image"]),
-                             "prompt": f"USER: <image>\n{mul[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"})
-                rows.append({**base, "uid": f"umuproto/{set_name}/{row['ID']}/{key}/txt", "modality": "txt",
-                             "image_bytes": None,
-                             "prompt": f"USER:\n{uni[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"})
+                img = image_bytes(row["image"])
+                variants = {
+                    "img": (img, f"USER: <image>\n{mul[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"),
+                    "txt": (None, f"USER:\n{uni[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"),
+                    "txt+img": (img, f"USER: <image>\n{uni[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"),
+                }
+                for m in want:
+                    ib, prompt = variants[m]
+                    rows.append({**base, "uid": f"umuproto/{set_name}/{row['ID']}/{key}/{m}", "modality": m,
+                                 "image_bytes": ib, "prompt": prompt})
     return rows
 
 
@@ -163,13 +171,15 @@ def generate_protocol(model, processor, rows, out_path, log, batch_size=1, dtype
     was_training = model.training
     model.eval()
     t0 = time.time()
-    for mod in ("img", "txt"):
+    for mod in sorted({r["modality"] for r in todo}):
         group = sorted([r for r in todo if r["modality"] == mod], key=lambda r: len(r["prompt"]))
-        bs = batch_size[mod] if isinstance(batch_size, dict) else batch_size
+        has_img = group[0]["image_bytes"] is not None
+        assert all((r["image_bytes"] is not None) == has_img for r in group), f"mixed image presence in {mod}"
+        bs = (batch_size["img" if has_img else "txt"] if isinstance(batch_size, dict) else batch_size)
         for i in range(0, len(group), bs):
             chunk = group[i:i + bs]
             prompts = [r["prompt"] for r in chunk]
-            if mod == "img":
+            if has_img:
                 imgs = [Image.open(io.BytesIO(r["image_bytes"])).convert("RGB") for r in chunk]
                 inputs = processor(images=imgs, text=prompts, padding=True, return_tensors="pt")
             else:
@@ -197,11 +207,11 @@ def generate_protocol(model, processor, rows, out_path, log, batch_size=1, dtype
 
 
 def fact_table(res, judge="correct_exact"):
-    """{(set, pair_id): {'txt': bool, 'img': bool}} for facts scored in both forms."""
+    """{(set, pair_id): {'txt': bool, 'img': bool[, 'txt+img': bool]}} for facts scored in both primary forms."""
     facts = collections.defaultdict(dict)
     for r in res:
         facts[(r["set"], r["pair_id"])][r["modality"]] = r[judge]
-    return {k: v for k, v in facts.items() if len(v) == 2}
+    return {k: v for k, v in facts.items() if "txt" in v and "img" in v}
 
 
 def protocol_summary(res, pair_ids=None):
@@ -219,4 +229,39 @@ def protocol_summary(res, pair_ids=None):
             all_ = float(np.mean([v["txt"] and v["img"] for v in fs]))
             out[f"{judge}/{s}"] = {"n_facts": len(fs), "uni": uni, "mul": mul, "any": any_, "all": all_,
                                    "AccF": (uni + mul + any_) / 3, "AccR": (uni + mul + all_) / 3}
+            ti = [v["txt+img"] for v in fs if "txt+img" in v]
+            if ti:
+                out[f"{judge}/{s}"]["uni_img"] = float(np.mean(ti))   # name-based question + portrait
     return out
+
+
+def degeneracy(res, modality="txt"):
+    """Share of the most frequent response among one modality's generations (1.0 = the model says the
+    same thing to every question, e.g. the 'PAPAPA...' collapse of umu_npo_txt_lr5e-05_s0 from epoch 2)."""
+    resp = [r["response"] for r in res if r["modality"] == modality]
+    return collections.Counter(resp).most_common(1)[0][1] / len(resp) if resp else None
+
+
+def classify_mc_rows(dfs, image_root, sets=("forget",), forms=("txt", "img")):
+    """UMU Classify facts as this repo's letter-MC rows (adapter.encode_mc), portraits written under
+    image_root. For the hook checks (Milestone J), which need left-padded MC batches, not for readout."""
+    rows = []
+    for set_name in sets:
+        for _, row in dfs[set_name].iterrows():
+            rel = f"images/{set_name}/{row['ID']}.jpg"
+            save_image(row["image"], Path(image_root) / rel)
+            cls = parse(row["Classify"])
+            uni = cls.get("unimodal", {})
+            mul = cls.get("muitimodal") or cls.get("multimodal") or {}
+            for key, u in uni.items():
+                ans = letter(u.get("answer"))
+                if key not in mul or ans not in (u.get("options") or {}):
+                    continue
+                q = {"txt": u["question"], "img": mul[key]["question"], "txt+img": u["question"]}
+                for m in forms:
+                    rows.append({"uid": f"umumc/{set_name}/{row['ID']}/{key}/{m}", "set": set_name, "split": "umu",
+                                 "source": "umu_mc", "modality": m, "profile": row["ID"], "field": key,
+                                 "pair_id": f"umu/{row['ID']}/{key}", "question": q[m],
+                                 "image": None if m == "txt" else rel,
+                                 "options": {k: str(v) for k, v in u["options"].items()}, "answer": ans})
+    return rows

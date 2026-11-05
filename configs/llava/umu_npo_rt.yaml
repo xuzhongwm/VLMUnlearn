@@ -1,0 +1,18 @@
+# DEV-012: second UMU unlearning run. Forget-only NPO at lr 5e-5 (umu_npo.yaml) collapsed every text-only input
+# to "PAPAPA..." from epoch 2 (forget AND retain), so its G ~ 0.9 measured "no image -> garbage", not forgetting.
+# Changes: + retain NLL on text-only UM_QA of 50 other retain_90 profiles (npo_rt, as the main grid's pilot),
+# lr 5e-5 -> 2e-5, 2 epochs evaluated every half epoch, and the forget readout adds txt+img (name + portrait):
+#   txt+img stays correct while txt fails -> the absent image, not the name, gates the forgetting
+#   txt+img fails with txt                 -> the name gates it (the H1 reading of the leak)
+#   python scripts/unlearn_umu.py --config configs/llava/umu_npo_rt.yaml
+base: umu_npo.yaml
+umu:
+  n_retain_unlearn: 50          # retain_90 profiles 21-70 (50 x 12 = 600 text QA), disjoint from the 20 readout profiles
+  reuse_step0_from: umu_npo_txt_lr5e-05_s0   # same base model: reuse its step-0 txt/img generations
+unlearn: {method: npo_rt, retain_weight: 1.0}
+train:
+  lr: 2.0e-5                    # TODO(confirm): lowest lr of the main grid
+  max_epochs: 2
+  eval_every_epochs: 0.5
+eval:
+  forms: {forget: [img, txt, txt+img], retain: [img, txt]}

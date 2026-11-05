@@ -98,6 +98,43 @@ def setup(cfg, log=None):
              van=van, on=on, targets=targets, lora=lora, window=window, n_dec=len(hooks.decoder_layers(model)))
 
 
+def setup_umu(cfg, adapter_dir, out_dir, log):
+    """UMU track (DEV-011): theta_0 = UMU's released vanilla (cfg.umu.ckpt, full weights), theta_u = theta_0 +
+    the unlearning LoRA under test (adapter_dir, e.g. runs/llava/umu_unlearn/<run>/ckpt/step<N>), so the checks
+    run on the exact adapter the analyses use. Batches: UMU Classify facts as letter-MC prompts (txt / img)."""
+    from peft import PeftModel
+    from ..umu import classify_mc_rows, load_umu
+    mc = cfg.get("mech", {})
+    seed_all(0)
+    adapter = get_adapter({**cfg["model"], "id": cfg["umu"]["ckpt"], "processor_id": cfg["model"]["id"],
+                           "dtype": mc.get("dtype", "float32")})
+    if adapter.dtype != torch.float32:
+        tol = mc.get("tol_rel_half", 1e-2)
+    else:
+        tol = mc.get("tol_rel_cuda_fp32", 1e-4) if adapter.device.type == "cuda" else mc.get("tol_rel_cpu", 1e-5)
+    dfs = load_umu(cfg["paths"]["root"], 0, 0, log, cfg["umu"]["forget_split"])
+    image_root = Path(out_dir) / "umu_images"
+    items = classify_mc_rows(dfs, image_root)
+    txt = {r["pair_id"]: r for r in items if r["modality"] == "txt"}
+    img = {r["pair_id"]: r for r in items if r["modality"] == "img"}
+    pairs = sorted(set(txt) & set(img))[:mc.get("n_items", 4)]
+    rows = {"img": [img[p] for p in pairs], "txt": [txt[p] for p in pairs]}
+    batches = {m: adapter.encode_mc(r, image_root) for m, r in rows.items()}
+    model = adapter.load_model()
+    model.eval()
+    van = {m: _logits(adapter, model, b) for m, b in batches.items()}
+    model = PeftModel.from_pretrained(model, str(adapter_dir), is_trainable=False)
+    model.eval()
+    log(f"Milestone J (UMU): base {cfg['umu']['ckpt']} ({adapter.dtype}), adapter {adapter_dir}, {len(pairs)} fact pairs")
+    lora = sorted(hooks.lora_modules(model))
+    layers = sorted({hooks.layer_index(x) for x in lora})
+    window = [x for x in lora if layers[len(layers) // 3] <= hooks.layer_index(x) < layers[2 * len(layers) // 3] + 1]
+    on = {m: _logits(adapter, model, b) for m, b in batches.items()}
+    targets = {m: tools.mc_targets(adapter, rows[m], b) for m, b in batches.items()}
+    return J(cfg=cfg, log=log, out_dir=out_dir, adapter=adapter, model=model, tol=tol, rows=rows, batches=batches,
+             van=van, on=on, targets=targets, lora=lora, window=window, n_dec=len(hooks.decoder_layers(model)))
+
+
 # ---------------------------------------------------------------------------------------- (i)-(iii)
 def check_adapter_changes_logits(j):
     out = {}
@@ -254,11 +291,12 @@ CHECKS = {
 }
 
 
-def run_milestone_j(cfg):
-    out_dir = model_dir(cfg) / "milestone_j"
+def run_milestone_j(cfg, umu_adapter_dir=None, out_dir=None):
+    """Default: the repo's own vanilla + a briefly trained adapter. umu_adapter_dir: the UMU track (setup_umu)."""
+    out_dir = Path(out_dir or model_dir(cfg) / "milestone_j")
     log = Logger(out_dir / "log.txt")
     with tracked_run(results_dir(cfg), out_dir, f"{cfg['model']['name']}_milestone_j", "milestone_j"):
-        j = setup(cfg, log)
+        j = setup_umu(cfg, umu_adapter_dir, out_dir, log) if umu_adapter_dir else setup(cfg, log)
         res = {"device": j.adapter.device.type, "tol_rel": j.tol, "n_lora_modules": len(j.lora),
                "n_window_modules": len(j.window), "n_decoder_layers": j.n_dec, "checks": {}}
         C = res["checks"]
@@ -266,7 +304,8 @@ def run_milestone_j(cfg):
             C.update(fn(j))
         res["passed"] = all(v["passed"] for v in C.values())
         atomic_write_json(Path(out_dir) / "milestone_j.json", res)
-        atomic_write_json(results_dir(cfg) / "milestone_j.json", res)
+        atomic_write_json(results_dir(cfg) / ("milestone_j_umu.json" if umu_adapter_dir else "milestone_j.json"),
+                          {**res, "adapter": str(umu_adapter_dir) if umu_adapter_dir else None})
         for k, v in C.items():
             log(f"{'PASS' if v['passed'] else 'FAIL'} {k}: " + ", ".join(f"{a}={b:.2e}" if isinstance(b, float) else f"{a}={b}"
                                                                          for a, b in v.items() if a != "passed"))

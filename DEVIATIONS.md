@@ -155,6 +155,26 @@ fictitious profiles as MLLMU-Bench, with per-fact paired unimodal / multimodal q
   GA_Diff with a retain set, the seed grid. forget_10 gives 65 doubly-correct facts at batch-1 fp16; forget_15
   would give more (not checked whether it contains forget_10).
 
+### DEV-012 — 2026-11-05 — UMU track: forget-only NPO collapses the text route; NPO + retain, txt+img readout (decided by: implementer, from data; user asked for the step 1–3 design)
+Run `umu_npo_txt_lr5e-05_s0` (DEV-011 settings). Doubly-correct: 65 forget / 26 retain facts.
+| step (epoch) | forget dc txt | forget dc img | G | retain dc txt | retain dc img |
+|---|---|---|---|---|---|
+| 75 (1) | 0.585 | 0.969 | +0.385 | 0.769 | 0.962 |
+| 150–300 (2–4) | 0.000 | 0.91–0.92 | +0.91 | 0.000 | 0.88–0.92 |
+From step 150 every text-only prompt, forget **and** retain, is answered with the same string ("PAPAPA…"); NPO's
+log-ratio fell from −3.4 (step 70) to −73 (step 90). G ≈ 0.9 there measures "no image → degenerate output", not
+fact-specific forgetting; steps 150–300 are not used. Step 75 is not degenerate but only partly specific
+(text-route drop: forget −41 points, retain −23 on dc facts) and already drifts to frequent answers
+("Vancouver, Canada." 13×, "NA" 12× among 100 forget txt responses).
+- **Next run** (`configs/llava/umu_npo_rt.yaml`): NPO + retain NLL (`npo_rt`, weight 1) on text-only UM_QA of 50
+  retain_90 profiles disjoint from the 20 readout profiles; lr 2e-5 (`TODO(confirm)`); 2 epochs; eval every 0.5 epoch.
+- **Readout additions:** `txt+img` (the name-based question with the portrait) on forget facts — separates "the name
+  gates the forgetting" from "the missing image gates it"; `degen_txt` = share of the most frequent text-only response.
+- **Mechanism checks on this track:** Milestone J now loads the adapter under analysis on top of UMU's vanilla
+  (`vlmu/mech/checks.py:setup_umu`, `scripts/check_hooks_umu.py`); the logit lens targets the correct option text
+  (first answer token, and the summed answer tokens without EOS) under the UMU-protocol prompt
+  (`scripts/mech_umu_lens.py`).
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |
