@@ -416,6 +416,38 @@ notebook §9b); retain facts and run 1 step 75 (§9b); attention vs MLP; a causa
 close. The log of this run printed only layers 0 and 31 (the row filter assumed every layer); the numbers above are
 from `summary.json`.
 
+**State patching, replication** (2026-11-19, notebook §9b; run at 19:16–19:23 UTC with the code of eded4cb, i.e. before
+the `opening` group was added: groups as above, the question group still includes BOS and `USER:`; self-patch error 0.00
+in both runs; `summary.json` of each run):
+| checkpoint, facts | forgetting, first token (nats) | top-1 θu / θ0 | restore last: L4, L8, L12, L16, L20 | induce last: L12, L14, L16, L20 | restore name, max | induce name, max | induce prompt at L2 |
+|---|---|---|---|---|---|---|---|
+| run 2 s150, forget (65) | 12.30 | 0.12 / 0.88 | 0.38, 0.62, 0.85, 0.95, 0.98 | 0.28, 0.60, 0.78, 0.90 | 0.11 | 0.04 | 0.02 |
+| run 2 s150, retain (26) | 11.24 | 0.12 / 0.92 | 0.39, 0.64, 0.90, 0.97, 0.99 | 0.28, 0.60, 0.78, 0.91 | 0.09 | 0.01 | 0.00 |
+| run 1 s75, forget (65) | 3.37 | 0.51 / 0.88 | 0.05, 0.40, 0.47, 0.74, 0.89 | 0.16, 0.09, 0.30, 0.63 | 0.25 | 0.33 | 0.57 |
+| run 1 s75, retain (26) | 3.24 | 0.58 / 0.92 | 0.12, 0.38, 0.44, 0.65, 0.85 | 0.23, 0.22, 0.46, 0.69 | 0.21 | 0.47 | 0.64 |
+Relative state change, training form / filler text / blank image: run 1 name tokens at layer 2 3.02 / 0.74 / 0.22, last
+prompt token at layer 16 0.82 / 0.50 / 0.25 (run 2: 0.20 / 0.09 / 0.03 and 0.66 / 0.37 / 0.25). Top-1 of θu on the three
+inputs: run 1 0.51 / 0.68 / 0.85; run 2 0.12 / 0.60 / 0.83.
+**Reading:**
+- Retain facts follow the same path as forget facts within each checkpoint: the collateral damage is the same process.
+- **The path is not the same in the two checkpoints.** In run 2 the name tokens carry almost nothing and the last
+  prompt token is sufficient from layers 14–16. In run 1 (NPO without a retain term, one epoch, the run that collapses
+  one epoch later) the unlearned state of the name tokens alone carries 0.31–0.33 of the suppression in layers 2–8
+  (0.40–0.47 on retain facts), the LoRA writes of layers 0–2 alone already produce 0.57 of it, the name-token states are
+  moved by three times their norm at layer 2, and the last prompt token takes over later (restore 0.74 at layer 16,
+  0.89 at layer 20; induce 0.30 and 0.63). "The name is not the carrier" therefore holds for run 2 only.
+- Common to both: the last prompt token carries most of the suppression in the later layers; the state change is
+  largest on the training form, smaller behind filler text and smallest behind a blank image, in the order of the
+  behaviour; forget and retain facts behave alike.
+- The two checkpoints differ in recipe (retain term) and in training length (75 vs 150 steps), so the difference cannot
+  be attributed to the retain term alone. Run 1's forgetting is small (3.4 nats), and its shares have wide intervals
+  (restore last at layer 8: 0.18–0.57).
+**Still open:** the opening / question-word split (needs §9b again with the current code).
+**Decision (user, 2026-11-19):** run 1 is not a usable unlearning checkpoint (little forgetting, as much damage to
+retain as to forget facts, collapse one epoch later) and is set aside: its numbers stay in this log, but it is not used
+as a second checkpoint or as a replication, here or in DEV-014. All mechanism claims are claims about run 2 step 150.
+Notebook §9b now runs run 2 only.
+
 ### DEV-016 — 2026-11-19 — does the suppression transfer to other examples? Mean-difference vector at the last prompt token (decided by: user proposed the test; design by: implementer)
 The state patching of DEV-015 moved a whole last-token state between θ0 and θu on the same fact. That shows the state is
 sufficient, but not whether it holds a signal shared across facts or fact-specific damage. The user asked whether the
@@ -441,6 +473,74 @@ added, as a share of the text-form forgetting. Ratio of means, 95% bootstrap ove
 add_own and sub_own must reproduce the induce and restore values of DEV-015 at the shared layers.
 **Known limits:** one checkpoint; one token position; the two halves share the question templates of the benchmark, so
 "other people" does not mean "other question wording"; a top-1 change is a first-token proxy for a generated answer.
+
+**Outcome, run 2 step 150** (2026-11-19, code at 2f83e55; `.../signal_transfer/summary.json`; figure
+`proposal/figures/signal_transfer_run2_step150.png`; self-patch error 0.00; add_own and sub_own reproduce DEV-015's
+induce and restore at every shared layer, e.g. 0.78 and 0.95 at layer 16). Forget facts, held-out people, share of the
+12.30 nats / top-1 (θ0 0.88, θu 0.12):
+| layer | 8 | 12 | 14 | 16 | 18 | 20 | 24 |
+|---|---|---|---|---|---|---|---|
+| cos(own δ, mean δ of other people) | 0.80 | 0.77 | 0.76 | 0.70 | 0.67 | 0.57 | 0.41 |
+| norm of mean δ / norm of a single δ | 0.81 | 0.79 | 0.78 | 0.72 | 0.69 | 0.61 | 0.47 |
+| sub_mean, share / top-1 | 0.57 / 0.48 | 0.81 / 0.65 | 0.90 / 0.78 | 0.91 / 0.82 | 0.88 / 0.71 | 0.78 / 0.52 | 0.62 / 0.32 |
+| add_mean, share / top-1 | 0.00 / 0.92 | 0.09 / 0.63 | 0.15 / 0.57 | 0.14 / 0.57 | 0.07 / 0.63 | 0.03 / 0.83 | 0.01 / 0.86 |
+| add_mean_normed, share / top-1 | 0.01 / 0.86 | 0.22 / 0.42 | 0.33 / 0.35 | 0.41 / 0.31 | 0.30 / 0.42 | 0.26 / 0.46 | 0.18 / 0.48 |
+| add_random / sub_random, share | 0.00 / 0.00 | 0.00 / −0.01 | 0.00 / 0.01 | 0.00 / −0.05 | 0.00 / −0.07 | 0.00 / −0.02 | 0.00 / 0.03 |
+Layer 16, 95% intervals: sub_mean 0.91 [0.85, 0.97]; add_mean 0.14 [0.09, 0.17]; add_mean_normed 0.41 [0.33, 0.48];
+add_random 0.00 [−0.00, 0.01]. Blank-image prompt (θu, top-1 0.83 unpatched): + mean δ at layers 12 / 16 / 20 moves
+0.31 / 0.40 / 0.11 of the text-form forgetting, top-1 0.42 / 0.35 / 0.58; + random 0.00–0.01, top-1 0.83–0.85. Retain
+facts with the forget people's mean δ, layer 16: sub_mean 0.93 (top-1 0.12 → 0.77; θ0 0.92), add_mean 0.18 (top-1
+0.92 → 0.42), add_mean_normed 0.51 (top-1 0.27).
+- **Verdict under the thresholds: partly shared, no verdict** (add_mean 0.14 < 0.5; sub_mean 0.91 ≥ 0.5; add_random 0.00).
+- What the numbers show: each fact's change points largely the same way as the other people's (cosine 0.70–0.80 up to
+  layer 16). Removing the shared part from θu restores nearly as much as removing the fact's own change (0.91 vs 0.95;
+  top-1 0.82 vs 0.89), so the shared part is necessary. Adding it to θ0 lowers top-1 from 0.88 to 0.57 (0.31 when
+  rescaled) but moves only 0.14 (0.41) of the log p, against 0.78 for the fact's own change, so it is not sufficient
+  for the full log-p drop: the fact-specific remainder matters for how far the answer token falls. Random vectors of
+  the same norm do nothing. The signal taken from forget people acts the same way on retain facts, and added to a
+  blank-image prompt it removes more than half of the otherwise correct first tokens (0.83 → 0.35).
+**What the unlearned model answers** (from the generations of the input-cue sweep, base form, 32 new tokens, greedy;
+`input_cues/items_base_{u,0}.jsonl`; read on 2026-11-19, not a pre-registered analysis). θ0 answers with the bare
+answer (mean 1.9 words: "Graphic Designer", "NA", "$85000."). θu mostly does not: on the forget facts 58 of 65
+responses have six or more words (mean 17.7), 6 are identical to θ0's, 8 open with a refusal ("I'm sorry, but I don't
+have access to…"), and most others are a biography sentence that opens with the person's name ("Amelia Brockhurst,
+born in Nottingham, England, is a talented graphic designer currently residing in Seattle, USA…"). 17 of the 24
+responses counted correct by keyword hit are such sentences that happen to contain the answer; many sentences contain
+other attributes of the person, some true and some invented (two responses about the same person can disagree on the
+profession), and a few call the person a fictional character. Retain facts: 24 of 26 responses long, same style. The
+most frequent first tokens agree: θ0 "NA", "University", "$"; θu "I" and first names ("Clara", "A", "El"); θ0 with the
+rescaled mean δ added starts with the same first names.
+**Reading (exploratory):** on this checkpoint the forgetting on the training form is largely a change of response mode,
+from the fine-tuned short answer to a free-form sentence about the person, switched at the last prompt token by a
+direction shared across people. It is not a loss of the association between the name and the person's attributes. This
+also accounts for the dissociation of DEV-015: the log p of the answer's first token collapses when the response opens
+with the name, while a keyword readout still finds the answer in part of the sentences. Not established: that adding
+the signal makes θ0 generate such sentences (only its first token was read); how much of the sentences is true; any of
+this on a second checkpoint.
+
+### DEV-017 — 2026-11-19 — does the vector switch the response style? Steering during generation (decided by: user chose this as the next experiment; design by: implementer)
+DEV-016 read only the first answer token under steering. The reading that the forgetting is a change of response style
+(short fine-tuned answer → long sentence about the person) came from inspecting θu's generations and was not tested.
+**Test, fixed before running** (`scripts/mech_umu_steer_generate.py`, notebook §11; eval only; run 2 step 150; training
+form `USER: {q}\nASSISTANT:`, prompt only, left-padded; all doubly-correct facts; greedy, 32 new tokens): the mean
+change of the last prompt token's state at layer 16 (θu − θ0, from the other half of the forget people; retain facts:
+all forget people; as DEV-016) is added to that state during the first forward pass of generation. Conditions: θ0;
+θ0 + mean vector; θ0 + mean vector rescaled to the average norm of a single change; θ0 + random (norm of the rescaled
+vector); θu; θu − mean vector; θu − random (norm of the mean vector); and, on the same question behind a blank image
+(forget facts), θu; θu + mean vector; θu + random. Per response: number of words; style = short (fewer than 6 words) /
+bio (longer, opens with the person's first name) / refusal (longer, opens with "I'm", "I's", "I don't", "It's", …) /
+other; keyword hit of the correct answer.
+**Predictions and thresholds** (forget facts; set knowing the first-token results of DEV-016, where the rescaled vector
+was the stronger one):
+- Switch on: θ0 + rescaled mean vector gives ≥ 50% long responses, with θ0 + random ≤ 10%. Fails below 20%.
+- Switch off: θu − mean vector gives ≥ 50% short responses, with θu − random ≤ 25% (θu itself: 11% short in the
+  input-cue generations). Fails below 25%.
+- In between: partial. Reported without a threshold: the unscaled vector, the blank-image prompts, retain facts, the
+  style breakdown, keyword hits.
+**Validity check:** steering with a zero vector must leave every generation of the first batch unchanged (else the
+script aborts).
+**Known limits:** the style labels are heuristics on the first words and the length; 32 new tokens cut long responses;
+one checkpoint.
 
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 

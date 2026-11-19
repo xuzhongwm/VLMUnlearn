@@ -353,11 +353,12 @@ first statement is safe, but 9.24 may overstate what the additions recorded with
 suppress. One token per fact, the first word of the question, is tokenised differently
 after the image and keeps its own additions.
 
-The same test on the retain facts and on a second checkpoint from a different recipe
-(run~1, NPO without a retain term, step 75) gives the same asymmetry
-(Table~\ref{tab:transplantrep}). In all four cases the additions recorded without the
-image add no suppression in the prompt with the image ($M$ between $-0.03$ and $0.06$),
-and the outcome under the fixed rule is mixed.
+The same test on the retain facts gives the same asymmetry
+(Table~\ref{tab:transplantrep}). Run~1 (NPO without a retain term, step 75) is listed for
+reference only: it forgets little and collapses one epoch later, so it is not counted as
+a replication. In all rows the additions recorded without the image add no suppression in
+the prompt with the image ($M$ between $-0.03$ and $0.06$), and the outcome under the
+fixed rule is mixed.
 
 \begin{table}[htbp]
 \centering\small
@@ -371,7 +372,7 @@ Run 1, forget (65) & 5.90 / 1.55 & 0.74 & 0.64 [0.45, 0.81] & $-0.03$ [$-0.05$, 
 Run 1, retain (26) & 5.60 / 0.55 & 0.90 & 0.55 [0.30, 0.75] & $-0.02$ [$-0.04$, $-0.00$]\\
 \bottomrule
 \end{tabular}
-\caption{Contribution transplant in layers 0--19 on two checkpoints. $M$ with 95\%
+\caption{Contribution transplant in layers 0--19. $M$ with 95\%
 intervals; ``name question'' is the name question receiving the additions recorded with
 the image, ``name + image'' the reverse.}
 \label{tab:transplantrep}
@@ -439,8 +440,55 @@ The two right panels of Figure~\ref{fig:statepatch} show a measurement, not a ca
 when text or an image precedes the question, the unlearned model's states stay closer to
 the vanilla's at every layer, in the same order as the behaviour (top-1 accuracy after
 unlearning 0.12 for the name question alone, 0.60 behind text, 0.83 behind a blank image).
-Limits: one checkpoint, forget facts, every other layer, the whole residual state without
-separating attention from MLP.
+Limits: every other layer, and the whole residual state without separating attention from
+MLP.
+
+\emph{Retain facts.} The 26 retain facts of the same checkpoint follow the same path:
+restoring the last prompt token recovers 0.39, 0.90 and 0.97 at layers 4, 12 and 16, and
+the name tokens at most 0.09. The damage to other people is the same process as the
+forgetting.
+
+\paragraph{8. Signal transfer: is there one shared signal, and what does it do?}
+Analysis 7 moved a whole state between the two models on the same fact. Here the change
+that unlearning makes to the last prompt token (unlearned state minus vanilla state) is
+averaged over facts about \emph{other people} and moved to examples it was not computed
+from. Thresholds were fixed in advance at layer 16: a shared signal requires that adding
+it to the vanilla induces at least 0.5 of the forgetting and that subtracting it from the
+unlearned model restores at least 0.5.
+
+Subtracting it restores 0.91 of the forgetting (interval 0.85--0.97) and raises top-1
+accuracy from 0.12 to 0.82, nearly as much as subtracting the fact's own change (0.95,
+0.89). Adding it to the vanilla lowers top-1 accuracy from 0.88 to 0.57, but moves only
+0.14 of the log probability; rescaled to the size of a single fact's change it gives 0.41
+and a top-1 accuracy of 0.31. A random vector of the same size does nothing. By the fixed
+rule the outcome is ``partly shared''. The changes of different facts point largely the
+same way (cosine 0.70--0.80 with the mean of the other people up to layer 16). The signal
+taken from forget people acts the same way on retain facts, and added to the question
+behind a blank image, where the answer normally survives, it lowers top-1 accuracy from
+0.83 to 0.35 (Figure~\ref{fig:signal}).
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{figures/signal_transfer_run2_step150.png}
+\caption{Signal transfer at the last prompt token. Left: added to the vanilla. Middle:
+subtracted from the unlearned model. Right: top-1 accuracy with the signal applied at
+layer 16.}
+\label{fig:signal}
+\end{figure}
+
+\emph{What the unlearned model says.} Reading the generated answers shows what this
+signal does. The vanilla answers with the bare answer (1.9 words on average: ``Graphic
+Designer''). The unlearned model mostly does not: 58 of its 65 responses on the forget
+facts are long (17.7 words on average), and most are a biography sentence that opens with
+the person's name, for example ``Amelia Brockhurst, born in Nottingham, England, is a
+talented graphic designer currently residing in Seattle, USA''. Eight open with a refusal.
+Of the 24 responses counted as correct, 17 are such sentences that happen to contain the
+answer. The sentences mix true and invented attributes. The forgetting on this prompt form
+is therefore largely a change of response mode, from the fine-tuned short answer to a
+free-form sentence about the person, and not a loss of what the model associates with the
+name. This reading comes from inspecting outputs after the fact; we have not shown that
+adding the signal makes the vanilla produce such sentences, only that its first token
+changes in the same way.
 
 \section{Where this leaves the hypotheses}
 \begin{itemize}
@@ -464,9 +512,9 @@ in the image context makes it ineffective, or why NPO arrives at this solution.
 (\texttt{scripts/mech\_umu\_input\_cues.py}: blank image before or after the question,
 blank image with zeroed features, text prefixes of several lengths), and run~4 (lr
 $10^{-4}$ with the strong retain term).
-\item \textbf{One checkpoint, one seed.} The logit lens and the contribution transplant
-were also run on a second checkpoint (run~1, step 75); for the other analyses we have
-recorded results on this checkpoint only.
+\item \textbf{One checkpoint, one seed.} Every mechanism claim rests on run~2, step 150.
+Run~1 was also analysed with some of the tools, but it is a degenerate run and is not
+used as a second checkpoint.
 \item \textbf{Small samples.} Layer and position masking use 24 forget and 8 retain facts
 and report no confidence intervals.
 \item \textbf{One method, one model, one direction.} Only NPO on LLaVA-1.5-7B with
