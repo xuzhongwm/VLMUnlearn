@@ -377,6 +377,71 @@ the image, ``name + image'' the reverse.}
 \label{tab:transplantrep}
 \end{table}
 
+\paragraph{7. State patching: where is the suppression carried?}
+Analyses 2 and 4 located where the LoRA \emph{writes}. This one locates what the writes
+\emph{change}. On the name question without an image, at one layer and one group of
+tokens, the hidden state of one model is replaced by the other model's state from the same
+prompt. ``Restore'' gives the unlearned model the vanilla's state and measures how much of
+the answer comes back. ``Induce'' gives the vanilla the unlearned model's state and
+measures how much suppression it carries over. Both are shares of the forgetting on the
+log probability of the first answer token, and both are also read as top-1 accuracy (is
+the correct first token the most likely one: 0.88 for the vanilla, 0.12 after
+unlearning). The patch is exact, and no thresholds were fixed: this is an exploratory map
+(Figure~\ref{fig:statepatch}, Table~\ref{tab:statepatch}).
+
+\begin{table}[htbp]
+\centering\small
+\begin{tabular}{@{}lccccccc@{}}
+\toprule
+Layer & 0 & 2 & 4 & 8 & 12 & 16 & 20\\
+\midrule
+Restore, last prompt token & 0.01 & 0.10 & 0.38 & 0.62 & 0.85 & 0.95 & 0.98\\
+\quad top-1 accuracy & 0.14 & 0.18 & 0.38 & 0.54 & 0.72 & 0.89 & 0.89\\
+Restore, question tokens & 0.27 & 0.47 & 0.30 & 0.16 & 0.09 & 0.00 & 0.00\\
+Restore, name tokens & 0.01 & 0.03 & 0.05 & 0.07 & 0.11 & 0.07 & 0.03\\
+\midrule
+Induce, last prompt token & 0.00 & 0.00 & 0.00 & 0.01 & 0.28 & 0.78 & 0.90\\
+\quad top-1 accuracy of the vanilla & 0.88 & 0.88 & 0.88 & 0.85 & 0.40 & 0.17 & 0.15\\
+Induce, any other group & \multicolumn{7}{c}{at most 0.04 at every layer}\\
+\bottomrule
+\end{tabular}
+\caption{State patching on 65 forget facts (run 2, step 150). ``Question tokens'' are the
+tokens other than the name, here including the opening ``USER:''.}
+\label{tab:statepatch}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{figures/state_patch_run2_step150.png}
+\caption{State patching. Left: restore. Second: induce. Right two: how far the unlearned
+model's state is from the vanilla's, at the last prompt token and at the name tokens, for
+the name question alone, behind 576 tokens of text, and behind a blank image.}
+\label{fig:statepatch}
+\end{figure}
+
+\begin{itemize}
+\item \textbf{The name is not the carrier.} Restoring the name tokens recovers at most
+0.11, and their unlearned state induces at most 0.04. The suppression does not work by
+damaging the representation of the person.
+\item \textbf{It starts on the question tokens and ends in the last prompt token.}
+Restoring the question tokens helps only in the first layers (0.47 at layer 2). Restoring
+the last prompt token helps from layer 4 (0.38) and recovers nearly everything from layer
+16 (0.95).
+\item \textbf{From about layer 14--16 the last token's state is sufficient.} Placed in
+the vanilla, it carries 0.78 of the suppression at layer 16 and lowers top-1 accuracy from
+0.88 to 0.17. Before layer 10 it carries nothing: the early changes are necessary, and
+later LoRA layers turn them into suppression.
+\item \textbf{The same layer appears in an independent test.} Swapping the last token's
+state between the name question with and without a blank image (12 facts, an earlier run)
+moves the full effect in both directions from layer 16 on.
+\end{itemize}
+The two right panels of Figure~\ref{fig:statepatch} show a measurement, not a causal test:
+when text or an image precedes the question, the unlearned model's states stay closer to
+the vanilla's at every layer, in the same order as the behaviour (top-1 accuracy after
+unlearning 0.12 for the name question alone, 0.60 behind text, 0.83 behind a blank image).
+Limits: one checkpoint, forget facts, every other layer, the whole residual state without
+separating attention from MLP.
+
 \section{Where this leaves the hypotheses}
 \begin{itemize}
 \item \textbf{H2 rejected:} the portrait route is not suppressed and repaired.

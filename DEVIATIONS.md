@@ -338,6 +338,20 @@ layer; run 2 step 150.
 **Status: exploratory.** No thresholds and no verdict are fixed; this is a map, and any reading of it is formed after
 seeing it and reported as such. Fixed in advance only: the readout, the token groups, and the validity check (a model's
 own state patched back in changes log p by ≤ 0.05 nats, else the script aborts).
+**Route patching at the last prompt token, outcome found on Drive** (`scripts/mech_umu_blank_patch.py`, notebook §6;
+`blank_patch.json` written 2026-11-05, not recorded here until 2026-11-19; run 2 step 150; 12 forget facts selected as
+wrong without an image and right with a blank image; layers 0, 4, …, 28, 31; log p of the first answer token, effect
+under θu minus the same patch under θ0; baseline θu −15.75 (text) / −0.00 (blank), θ0 −0.13 / −0.04):
+| layer patched | 0 | 4 | 8 | 12 | 16 | 20 | 24 | 28 | 31 |
+|---|---|---|---|---|---|---|---|---|---|
+| text → blank (nats) | 0.00 | −0.88 | −4.72 | −11.40 | −15.40 | −15.10 | −15.19 | −15.16 | −15.66 |
+| blank → text (nats) | +0.88 | +5.54 | +10.66 | +15.09 | +15.66 | +15.69 | +15.69 | +15.67 | +15.66 |
+The same patches under θ0 change log p by less than 0.1 nats. From layer 16 on, the state of the last prompt token
+alone decides the outcome in both directions; it is built up over layers 4–16, inside the band where the LoRA acts and
+before the layers where the answer emerges (20–26). Limits: 12 facts selected on their outcome, one token position, a
+coarse layer grid; at late layers the patch is close to copying the output state, so only the profile up to layer 16 is
+informative. This partly covers link 2 (at the last token only); the state-patching experiment extends it to all token
+groups, to θ0 ↔ θu on the same prompt, and to all doubly-correct facts.
 **Input-cue sweep, outcome** (run 2 step 150; `results/llava/mech_umu/<run>/step150/input_cues/summary.json`, first
 written 2026-11-05, re-summarised 2026-11-19; answer log p θ0 → θu with the drop in nats, R with a 95% profile
 bootstrap, generation keyword hit θ0 → θu; forget 65 facts / retain 26):
@@ -366,6 +380,41 @@ Reading, by the decision rule fixed in `proposal/proposal.tex` (§ Experiment 1)
   bypass; DEV-014's M is a statement on the log-p scale, and the 2.40 nats it reports for the blank prompt carrying the
   text run's contributions lie in the range where generated answers start to change, so its behavioural meaning is not
   established. Later analyses report a behaviour-level readout next to log p.
+
+**State patching, outcome, run 2 step 150** (2026-11-19, code at eded4cb; `.../state_patch/summary.json`; figure
+`proposal/figures/state_patch_run2_step150.png`; 65 forget dc facts / 42 profiles; every other layer; self-patch error
+0.00 nats; forgetting 12.30 nats on the first answer token; top-1 of the first answer token θu 0.12, θ0 0.88). Token
+groups of this run: name (4.3 tokens), question (10.1, **including BOS and `USER:`**), frame (4.0), last (1), prompt (19.4).
+| layer | 0 | 2 | 4 | 8 | 12 | 14 | 16 | 20 |
+|---|---|---|---|---|---|---|---|---|
+| restore, last (recovery) | 0.01 | 0.10 | 0.38 | 0.62 | 0.85 | 0.92 | 0.95 | 0.98 |
+| restore, last (top-1) | 0.14 | 0.18 | 0.38 | 0.54 | 0.72 | 0.86 | 0.89 | 0.89 |
+| restore, question | 0.27 | 0.47 | 0.30 | 0.16 | 0.09 | 0.03 | 0.00 | 0.00 |
+| restore, name | 0.01 | 0.03 | 0.05 | 0.07 | 0.11 | 0.08 | 0.07 | 0.03 |
+| restore, frame | 0.01 | 0.04 | 0.08 | 0.07 | 0.05 | 0.05 | 0.04 | 0.02 |
+| restore, prompt | 0.30 | 0.59 | 0.65 | 0.83 | 0.96 | 0.98 | 0.99 | 0.99 |
+| induce, last (share) | 0.00 | 0.00 | 0.00 | 0.01 | 0.28 | 0.60 | 0.78 | 0.90 |
+| induce, last (top-1 of θ0) | 0.88 | 0.88 | 0.88 | 0.85 | 0.40 | 0.17 | 0.17 | 0.15 |
+| induce, prompt | 0.00 | 0.02 | 0.02 | 0.12 | 0.55 | 0.78 | 0.90 | 0.96 |
+Induce for name / question / frame alone is ≤ 0.04 at every layer. 95% intervals for restore, last: layer 4
+[0.29, 0.48], 8 [0.52, 0.71], 12 [0.79, 0.92], 16 [0.90, 0.99]; induce, last: layer 12 [0.23, 0.34], 16 [0.75, 0.82].
+Relative state change ||h_u − h_0|| / ||h_0|| for the training form / filler text / blank image: name tokens at layer 2
+0.20 / 0.09 / 0.03; last prompt token at layer 16 0.66 / 0.37 / 0.25; image tokens 0.01–0.05 in layers 2–10. On those
+three inputs: first-token forgetting 12.30 / 1.64 / 0.88 nats, top-1 of θu 0.12 / 0.60 / 0.83 (θ0 0.88 / 0.86 / 0.86).
+**Reading (exploratory, formed after seeing the map):**
+- The suppression is not carried on the name tokens (restore ≤ 0.11, induce ≤ 0.04).
+- It starts on the question group in layers 0–2 (restore 0.27–0.47) and is accumulated in the last prompt token:
+  necessary there from layer 4 (0.38), necessary and sufficient from layers 14–16 (restore 0.92–0.95, induce 0.60–0.78),
+  on log p and on top-1. This agrees with the route patching above (last token decisive from layer 16) with a
+  different patch and all facts.
+- Early writes are necessary but not sufficient: restoring all prompt states at layer 2 recovers 0.59, while θu's
+  states at layer 2 induce 0.02 in θ0. Later LoRA layers turn the early change into suppression.
+- With text or an image before the question, θu's states stay closer to θ0's at every layer and token group, in the
+  order of the behaviour (training form > filler text > blank image). This is a measurement, not a causal test.
+**Open after this run:** which tokens of the question group act early (opening vs question words; group split added,
+notebook §9b); retain facts and run 1 step 75 (§9b); attention vs MLP; a causal test of why the image keeps the states
+close. The log of this run printed only layers 0 and 31 (the row filter assumed every layer); the numbers above are
+from `summary.json`.
 
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 

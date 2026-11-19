@@ -9,9 +9,10 @@ prompt tokens, the residual state of one model is replaced by the other model's 
 lp = log p of the first answer token (only prompt positions can affect it; the answer-text log p is saved too).
 Ratio of means over facts, 95% bootstrap over profiles. Second readout, top-1: is the correct first answer token the
 most likely one? The input-cue sweep showed that a large drop in log p and a changed generated answer are different
-things (3 nats cost as many answers as 14), so the map is reported on both. Token groups: name, question (the other tokens up to the question
-mark, incl. "USER:"), frame (the newline and "ASSISTANT"), last (the final ":", where the first answer token is
-predicted), prompt (all of them).
+things (3 nats cost as many answers as 14), so the map is reported on both.
+Token groups: opening (BOS and "USER:"), name, question (the other question tokens up to the question mark), frame (the
+newline and "ASSISTANT"), last (the final ":", where the first answer token is predicted), prompt (all of them). The
+first run (2026-11-19) had no opening group: its question group included those tokens; its records are not reused.
 
 Reading (exploratory, no thresholds): a group with high recovery at a layer carries the suppression there. Recovery for
 `prompt` at layer l is the share of the suppression produced by layers up to l. The usual picture for a fact recalled
@@ -47,9 +48,9 @@ from vlmu.runs import free, model_dir, results_dir  # noqa: E402
 from vlmu.umu import encode_teacher_forced, first_target, load_umu, token_groups_umu, umu_run_id  # noqa: E402
 from vlmu.utils import Logger, append_jsonl, atomic_write_json, read_json, read_jsonl, tracked_run  # noqa: E402
 
-GROUPS = ("name", "question", "frame", "last", "prompt")
+GROUPS = ("opening", "name", "question", "frame", "last", "prompt")
 CONTEXTS = ("blank", "filler")     # the same question behind a blank image / behind 576 filler text tokens
-CTX_GROUPS = ("image", "context", "name", "question", "frame", "last")
+CTX_GROUPS = ("opening", "image", "context", "name", "question", "frame", "last")
 SELF_TOL = 0.05      # nats; a model's own state patched back in must reproduce the unpatched run
 
 
@@ -66,15 +67,19 @@ def make_rows(fact, blank, filler):
 
 
 def split_groups(adapter, model, rows, batch, t_all):
-    """token_groups_umu, with its `template` group split in three: frame = the last newline before the end of the
-    prompt and "ASSISTANT"; context = everything up to an earlier newline, if there is one (the text before the question
-    in the blank-image and filler prompts; empty on the training form); question = the rest (on the training form this
-    includes "USER:"). Returns ({group: bool [B, T]}, number of rows without a name mask)."""
+    """token_groups_umu, with its `template` group split in four: opening = BOS and "USER:"; frame = the last newline
+    before the end of the prompt and "ASSISTANT"; context = everything else up to an earlier newline, if there is one
+    (the text before the question in the blank-image and filler prompts; empty on the training form); question = the
+    rest. Returns ({group: bool [B, T]}, number of rows without a name mask)."""
     g, _ = token_groups_umu(adapter, model, rows, batch, t_all)
     nl = adapter.tok.convert_tokens_to_ids("<0x0A>")
     ids = batch["input_ids"]
-    frame, context = torch.zeros_like(g["last"]), torch.zeros_like(g["last"])
+    frame, context, opening = (torch.zeros_like(g["last"]) for _ in range(3))
+    head = adapter.tok("USER:", add_special_tokens=True)["input_ids"]
     for i in range(ids.shape[0]):
+        if ids[i, :len(head)].tolist() != head:
+            raise ValueError(f"the prompt does not start with the tokens of 'USER:': {rows[i]['uid']}")
+        opening[i, :len(head)] = True
         last = int(g["last"][i].nonzero()[0])
         start = last - 1
         while start > 0 and int(ids[i, start]) != nl:
@@ -85,10 +90,10 @@ def split_groups(adapter, model, rows, batch, t_all):
         earlier = (ids[i, :start] == nl).nonzero()
         if len(earlier):
             context[i, :int(earlier[0]) + 1] = True
-    context = context & g["template"]
-    out = {"name": g["name"], "question": g["template"] & ~frame & ~context, "frame": frame, "last": g["last"],
-           "image": g["image"], "context": context}
-    out["prompt"] = out["name"] | out["question"] | out["frame"] | out["last"]
+    context = context & g["template"] & ~opening
+    out = {"opening": opening, "name": g["name"], "question": g["template"] & ~frame & ~context & ~opening,
+           "frame": frame, "last": g["last"], "image": g["image"], "context": context}
+    out["prompt"] = out["opening"] | out["name"] | out["question"] | out["frame"] | out["last"]
     return out, int((~g["name"].any(1)).sum())
 
 
@@ -164,6 +169,7 @@ def score_text(adapter, model, rows, layers, n_layers, check):
     recs = []
     for i, r in enumerate(rows):
         rec = {"pair_id": r["pair_id"], "set": r["set"], "profile": r["profile"], "layers": list(layers),
+               "groups": list(GROUPS),
                "n_tokens": {g: int(groups[g][i].sum()) for g in GROUPS},
                "lp": {tag: as_dict(lp[tag], i) for tag in ("u", "0")},
                "rel_text": {g: [round(v, 5) for v in rel[g][i]] for g in rel}}
@@ -272,8 +278,8 @@ def plot(s, title, path):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     INK2, MUTED, GRID, AXIS = "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
-    colors = {"name": "#6a4fd8", "question": "#8a8880", "frame": "#eda100", "last": "#e34948", "prompt": "#111111",
-              "image": "#1baf7a"}
+    colors = {"opening": "#1baf7a", "name": "#6a4fd8", "question": "#8a8880", "frame": "#eda100", "last": "#e34948",
+              "prompt": "#111111"}
     layers = s["layers"]
     num = lambda xs: [np.nan if v is None else v for v in xs]  # noqa: E731
     fig, axes = plt.subplots(1, 4, figsize=(17.5, 3.7), dpi=200)
@@ -360,7 +366,8 @@ def main():
         layers = sorted(set(range(0, n_layers, max(1, args.layer_step))) | {n_layers - 1})
         contexts = () if args.no_contexts else CONTEXTS
         done = {r["pair_id"]: r for r in read_jsonl(path)
-                if r.get("layers") == layers and all(f"rel_{c}" in r for c in contexts)}
+                if r.get("layers") == layers and r.get("groups") == list(GROUPS)
+                and all(f"rel_{c}" in r for c in contexts)}
         blank, filler = blank_image_bytes(), filler_string(adapter.tok, 576)
         pairs = {f["pair_id"]: make_rows(f, blank, filler) for f in facts}
         todo = sorted((f for f in facts if f["pair_id"] not in done), key=lambda f: len(pairs[f["pair_id"]]["text"]["prompt"]))
@@ -405,7 +412,7 @@ def main():
                             "induce": "theta_0 with theta_u's residual state at one layer and token group; (lp_0 - lp_patched) / (lp_0 - lp_u)",
                             "rel": "mean over a group's tokens of ||h_u - h_0|| / ||h_0|| at each layer output"},
             "self_patch_error_nats": worst, "summary": summary})
-        show = [k for k, layer in enumerate(layers) if layer % 4 == 3 or layer == 0]
+        show = sorted(set(range(0, len(layers), 2)) | {len(layers) - 1})
         for set_name, s in summary.items():
             log(f"{set_name}: n={s['n_facts']} facts / {s['n_profiles']} profiles; forgetting {s['forgetting']['first']:.2f} nats "
                 f"(first token), {s['forgetting']['answer']:.2f} nats (answer); tokens per group "
