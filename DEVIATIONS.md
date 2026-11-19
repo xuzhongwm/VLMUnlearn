@@ -416,6 +416,32 @@ notebook §9b); retain facts and run 1 step 75 (§9b); attention vs MLP; a causa
 close. The log of this run printed only layers 0 and 31 (the row filter assumed every layer); the numbers above are
 from `summary.json`.
 
+### DEV-016 — 2026-11-19 — does the suppression transfer to other examples? Mean-difference vector at the last prompt token (decided by: user proposed the test; design by: implementer)
+The state patching of DEV-015 moved a whole last-token state between θ0 and θu on the same fact. That shows the state is
+sufficient, but not whether it holds a signal shared across facts or fact-specific damage. The user asked whether the
+signal, put on examples that were not unlearned, makes them forgotten.
+**Test, fixed before running** (`scripts/mech_umu_signal_transfer.py`, notebook §10; eval only; run 2 step 150; training
+form `USER: {q}\nASSISTANT:`; all doubly-correct facts, 65 forget / 26 retain): δ = h_u − h_0 at the last prompt token,
+at layers 8, 12, 14, 16, 18, 20, 24. The forget profiles are split in two halves (alternating in sorted order); a forget
+fact uses the mean δ of the half its person is not in, a retain fact the mean δ of all forget facts. Conditions at one
+layer: θ0 with h_0 + mean δ (add_mean), the same with mean δ rescaled to the average norm of a single δ
+(add_mean_normed), h_0 + own δ (reference), h_0 + a random vector of the norm of mean δ (control); θu with h_u − mean δ
+(sub_mean), − own δ (reference), − random (control); θu on the same question behind a blank image, where the answer is
+not suppressed, with its last-token state + mean δ of the training form (blank_add_mean) and + random, at layers 12,
+16, 20. Readout: log p of the first answer token, top-1 accuracy, and the most frequent predicted first tokens.
+add: share = (lp_0 − lp_patched) / (lp_0 − lp_u); sub: share = (lp_patched − lp_u) / (lp_0 − lp_u); blank: suppression
+added, as a share of the text-form forgetting. Ratio of means, 95% bootstrap over profiles.
+**Predictions and thresholds** (forget facts, layer 16, the layer from which DEV-015 found the state sufficient):
+- Shared signal: add_mean ≥ 0.5 and sub_mean ≥ 0.5 and add_random ≤ 0.1.
+- Fact-specific: add_mean ≤ 0.2 and sub_mean ≤ 0.2.
+- Anything else is reported as partly shared, without a verdict.
+- Reported without a threshold: retain facts with the forget signal; the blank-image prompt; all other layers;
+  add_mean_normed (separates direction from size); cosine between each δ and the mean of the other people.
+**Validity checks:** a state patched back in changes log p by ≤ 0.05 nats (first batch, else the script aborts);
+add_own and sub_own must reproduce the induce and restore values of DEV-015 at the shared layers.
+**Known limits:** one checkpoint; one token position; the two halves share the question templates of the benchmark, so
+"other people" does not mean "other question wording"; a top-1 change is a first-token proxy for a generated answer.
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |
