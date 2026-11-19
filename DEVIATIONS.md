@@ -280,6 +280,92 @@ first 3 facts; the script aborts otherwise); the bypass reproduces on these fact
 **Known limits:** one checkpoint, one seed; the late band is the only control for "any foreign contribution disrupts the
 run"; the first question token is tokenised differently after `<image>\n` and stays outside the shared suffix (logged);
 the per-layer cosine between the two recordings is descriptive only.
+**Outcome, run 2 step 150** (2026-11-19, code at f6e759b; `results/llava/mech_umu/<run>/step150/transplant/summary.json`;
+figure `proposal/figures/transplant_run2_step150.png`; 65 forget dc facts / 42 profiles; 14.4 shared prompt tokens on
+average; one text-prompt token per fact, the first word of the question, outside the shared suffix):
+- Validity: self-transplant changes log p by 0.00 nats (3 facts); forgetting 14.42 nats (text) vs 1.68 nats (blank),
+  R_blank 0.88, as in the form sweep.
+- Layers 0–19: M(text←blank) = 0.41 [0.34, 0.48], M(blank←text) = 0.06 [0.03, 0.09] → **mixed, no verdict**. T is met in
+  neither direction; O is met for blank←text only. First answer token: 0.43 / 0.04.
+- Control, layers 20–31: −0.00 / +0.00 → no effect, as expected.
+- Reference, LoRA off at the shared tokens in layers 0–19: text 1.07, blank −0.08.
+- Suppression S (nats, answer log p) by prompt and by source of the contributions in layers 0–19: text prompt 14.42
+  (own) / 9.24 (from the blank run) / 0.76 (off); blank prompt 2.40 (from the text run) / 1.68 (own) / 0.63 (off).
+- Descriptive, layers 0–19: cosine between the two recordings 0.89 on the shared prompt tokens (0.73–0.96 by layer) and
+  0.96 at the last prompt token (0.88–1.00); norm ratio blank / text 1.28 on average (0.53–2.22 by layer; a mean of
+  per-token ratios, not to be leaned on).
+**Reading (exploratory, formed after seeing the data):** both pure accounts fail. The image does not stop the write:
+with the image the LoRA writes similar contributions, and the text run's own contributions, which carry 14.4 nats of
+suppression there, add 0.7 nats when written into the blank run. The write is not irrelevant either: the blank run's
+contributions carry 9.2 of the 14.4 nats in the text prompt. Suppression needs the text run's contributions and the
+text-only context together, and the context is the larger factor. Generic disruption by foreign contributions can only
+raise both transplanted values, so 2.40 is an upper bound (the first claim is safe) and 9.24 may overstate what the
+blank run's contributions suppress. This weakens the causal reading of P5 in DEV-013 (lower ||A x|| with an image, less
+forgetting). Not tested: what in the image context makes the contributions ineffective.
+**Replication** (2026-11-19, same code and thresholds, layers 0–19, answer log p; M(text←blank) / M(blank←text)):
+| checkpoint, facts | forgetting text / blank (nats) | R_blank | M(text←blank) [95%] | M(blank←text) [95%] |
+|---|---|---|---|---|
+| run 2 s150, forget (65) | 14.42 / 1.68 | 0.88 | 0.41 [0.34, 0.48] | 0.06 [0.03, 0.09] |
+| run 2 s150, retain (26) | 12.08 / 0.82 | 0.93 | 0.43 [0.31, 0.52] | 0.06 [0.03, 0.10] |
+| run 1 s75 (`umu_npo_txt_lr5e-05_s0`, NPO only), forget (65) | 5.90 / 1.55 | 0.74 | 0.64 [0.45, 0.81] | −0.03 [−0.05, −0.01] |
+| run 1 s75, retain (26) | 5.60 / 0.55 | 0.90 | 0.55 [0.30, 0.75] | −0.02 [−0.04, −0.00] |
+Self-transplant 0.00 nats in every run; control band 20–31 within |M| ≤ 0.04 everywhere. All four are mixed under the
+thresholds, with the same asymmetry: the text run's contributions add no suppression in the blank prompt (−0.03 to
+0.06), while the blank run's contributions remove 0.41–0.64 of the gap in the text prompt. The blank-image bypass and
+the asymmetry hold on a second checkpoint from a different recipe and on retain facts. Run 1 differs in degree: weaker
+forgetting, a larger M(text←blank), and some effect of the late band when the LoRA is switched off there (text_off
+20–31: 0.17, against 0.07 in run 2).
+
+### DEV-015 — 2026-11-19 — exploratory localisation: where the suppression is carried (decided by: user asked for the experiments a mechanism claim needs; design by: implementer)
+The course report is due in about three weeks (around 2026-12-10); the user wants at least one phenomenon analysed
+positively, not only rejected hypotheses. A mechanism claim needs four links; their state after DEV-014:
+(1) where the LoRA writes: layers 0–19, the whole text prompt (layer and position masking); (2) what those writes
+change, i.e. which hidden state carries the suppression to the output: **not measured**; (3) how the answer fails to
+appear: partly (logit lens: the answer does not emerge in layers 20–26; no write against the answer direction);
+(4) where the chain breaks with an image: partly (DEV-014: not at the write). The input-cue sweep
+(`scripts/mech_umu_input_cues.py`, notebook §7) is run as planned in the proposal; it names the property of the input
+that decides the outcome and is not itself evidence for links 2–4.
+**Experiment for link 2, and for link 4 descriptively** (`scripts/mech_umu_state_patch.py`, notebook §9; eval only):
+cross-model state patching on the training form `USER: {q}\nASSISTANT:`. At one decoder layer and one group of prompt
+tokens (name / other question tokens incl. `USER:` / the newline and `ASSISTANT` / the last prompt token / all prompt
+tokens), the residual state of θu is replaced by θ0's from the same prompt (restore) or the reverse (induce). Readout:
+log p of the first answer token (85% of the answer-text forgetting on run 2; only prompt positions can affect it),
+recovery = (lp_patched − lp_u) / (lp_0 − lp_u), induced = (lp_0 − lp_patched) / (lp_0 − lp_u); ratio of means over
+facts, 95% bootstrap over profiles; second readout: top-1 accuracy of the first answer token (added after the
+input-cue outcome below). Descriptive: ||h_u − h_0|| / ||h_0|| per layer and token group on the training form and on
+the same question behind a blank image and behind 576 filler text tokens. Default: 65 forget dc facts, every other
+layer; run 2 step 150.
+**Status: exploratory.** No thresholds and no verdict are fixed; this is a map, and any reading of it is formed after
+seeing it and reported as such. Fixed in advance only: the readout, the token groups, and the validity check (a model's
+own state patched back in changes log p by ≤ 0.05 nats, else the script aborts).
+**Input-cue sweep, outcome** (run 2 step 150; `results/llava/mech_umu/<run>/step150/input_cues/summary.json`, first
+written 2026-11-05, re-summarised 2026-11-19; answer log p θ0 → θu with the drop in nats, R with a 95% profile
+bootstrap, generation keyword hit θ0 → θu; forget 65 facts / retain 26):
+| form | forget log p (drop) | forget R | forget generation | retain R | retain generation |
+|---|---|---|---|---|---|
+| base (training form) | −0.81 → −15.27 (14.46) | 0 | 0.77 → 0.37 | 0 | 0.85 → 0.35 |
+| blank image before | −1.27 → −2.99 (1.71) | 0.88 [0.81, 0.94] | 0.75 → 0.69 | 0.93 | 0.81 → 0.73 |
+| text prefix, 16 tokens | −1.91 → −5.25 (3.34) | 0.77 [0.72, 0.81] | 0.68 → 0.35 | 0.63 | 0.73 → 0.31 |
+| text prefix, 64 | −1.81 → −4.85 (3.04) | 0.79 [0.74, 0.84] | 0.71 → 0.35 | 0.67 | 0.73 → 0.38 |
+| text prefix, 256 | −1.75 → −3.85 (2.10) | 0.85 [0.81, 0.90] | 0.72 → 0.51 | 0.76 | 0.65 → 0.42 |
+| text prefix, 576 | −1.64 → −4.15 (2.50) | 0.83 [0.77, 0.88] | 0.71 → 0.48 | 0.76 | 0.69 → 0.35 |
+| blank image after | −13.00 → −12.29 | (1.05) | 0.03 → 0.25 | (1.06) | 0.00 → 0.23 |
+| blank image, zeroed features | −13.60 → −15.88 | (0.84) | 0.22 → 0.06 | (0.80) | 0.31 → 0.08 |
+| text suffix, 576 | −5.47 → −13.21 (7.74) | 0.46 | 0.40 → 0.40 | 0.46 | 0.46 → 0.27 |
+Reading, by the decision rule fixed in `proposal/proposal.tex` (§ Experiment 1):
+- Text prefixes reproduce the blank image on log p (R 0.77–0.85 against 0.88; no dose–response beyond 16 tokens) but
+  **not in generation**: the relative loss of correct answers is 48–50% with 16 / 64 tokens and 30–33% with 256 / 576,
+  against 8% with the blank image and 52% in the base form. The rule requires both readouts, so a length or
+  displacement account is **not supported**: at equal length (576 tokens) an image restores the answers and text does not.
+- Zeroed features and image-after are **not interpretable**: the vanilla fails there (answer log p −13.6 / −13.0,
+  accuracy 0.22 / 0.03). Whether visual content or the image slots matter is therefore still open. The suffix form
+  damages the vanilla too (0.40).
+- **Log p and generation dissociate.** The 14.5 nats of the base form are far more than is needed to change the
+  generated answer: about 3 nats (16-token prefix) cost as many answers as 14.5. R on log p therefore overstates how
+  much a form escapes. Consequences: the text-only R values of DEV-013 (P3, filler text) do not show a behavioural
+  bypass; DEV-014's M is a statement on the log-p scale, and the 2.40 nats it reports for the blank prompt carrying the
+  text run's contributions lie in the range where generated answers start to change, so its behavioural meaning is not
+  established. Later analyses report a behaviour-level readout next to log p.
 
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 

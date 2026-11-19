@@ -34,9 +34,12 @@ person, but stays at 0.97 when the question shows the person's portrait. Interve
 the unlearned model show three things. The knowledge is still in the model. The update
 that causes the forgetting sits in decoder layers 0--19 and acts across the whole text
 prompt, not on the name alone. Adding an image to the name question, even a blank one,
-removes most of the suppression. Our current reading is that text-only unlearning teaches
-the model to suppress answers to one \emph{form of input}; it does not remove what the
-model knows about a person. All mechanism results come from one checkpoint of one run.
+removes most of the suppression. A final test swaps what the unlearning adapter writes
+between the two prompts: the adapter writes nearly the same thing with and without the
+image, and the answer is suppressed only when those writes land in a text-only prompt. Our
+current reading is that text-only unlearning teaches the model to suppress answers to one
+\emph{form of input}; it does not remove what the model knows about a person. All
+mechanism results come from one checkpoint of one run.
 
 \section{Motivation}
 \paragraph{The problem.} Machine unlearning tries to make a trained model behave as if it
@@ -151,7 +154,7 @@ people intact.
 
 \subsection{Mechanism analyses on run 2, step 150}
 None of these analyses involves training. Each compares $\thu$ with $\tho$, or switches
-parts of the unlearning LoRA off.
+off or swaps parts of what the unlearning LoRA adds.
 
 \paragraph{1. Logit lens: is the portrait route suppressed and then repaired?}
 We read out, at every layer, how much unlearning changed the log probability of the first
@@ -282,6 +285,98 @@ accuracy (0.71 to 0.48). The blank image is the only form without a portrait tha
 on both readouts, so ``any prefix escapes'' is not established.
 \end{itemize}
 
+\paragraph{6. Contribution transplant: does the image stop the suppression from being written?}
+The name question with and without a blank image ends in the same tokens (on average 14.4
+prompt tokens: the question after its first word, and ``ASSISTANT:''). The LoRA weights
+are identical in the two runs, so what the LoRA adds at these tokens can differ only
+because the hidden states it reads differ. We record what every LoRA module adds at the
+shared tokens in each run, and then swap: the name question runs with the additions
+recorded with the image, and the name question with the image runs with the additions
+recorded without it. The swap is exact: swapping a prompt's own additions back in changes
+the log probability by 0.00.
+
+Two readings were fixed before the run, for layers 0--19. The measure is the moved
+fraction $M$: the share of the gap in suppression between the two prompts that follows the
+swap. ``The image changes what is written'' requires $M\ge0.5$ in both directions; ``the
+same thing is written but not used'' requires $M\le0.2$ in both directions.
+
+On the 65 forget facts, $M=0.41$ (95\% interval 0.34--0.48) when the name question
+receives the additions recorded with the image, and $M=0.06$ (0.03--0.09) when the prompt
+with the image receives the additions recorded without it
+(Figure~\ref{fig:transplant}). By the fixed rule this is a mixed outcome: neither reading
+holds in both directions. In layers 20--31, the control, the swap does nothing
+($|M|<0.01$). Table~\ref{tab:transplant} gives the same result as suppression in each
+prompt.
+
+\begin{table}[htbp]
+\centering\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+ & \multicolumn{3}{c}{What the LoRA adds at the shared tokens in layers 0--19}\\
+\cmidrule(l){2-4}
+Prompt & recorded without image & recorded with image & nothing\\
+\midrule
+Name question & 14.42 & 9.24 & 0.76\\
+Name question + blank image & 2.40 & 1.68 & 0.63\\
+\bottomrule
+\end{tabular}
+\caption{Suppression of the correct answer: drop in log probability relative to the
+vanilla, in nats, on 65 forget facts. 14.42 and 1.68 are the unmodified runs.}
+\label{tab:transplant}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{figures/transplant_run2_step150.png}
+\caption{Contribution transplant. Left and middle: moved fraction $M$ per layer band, with
+the LoRA switched off at the same tokens as a reference. Right: cosine between what the
+LoRA adds with and without the image, per layer.}
+\label{fig:transplant}
+\end{figure}
+
+The table supports three statements.
+\begin{itemize}
+\item \textbf{The image does not stop the write.} The additions recorded without the
+image carry 14.4 nats of suppression in their own prompt, but add only 0.7 nats when
+written into the prompt with the image (2.40 against 1.68).
+\item \textbf{What is written is similar in both cases.} In layers 0--19 the cosine
+between the two sets of additions averages 0.89 on the shared prompt tokens and 0.96 at
+the last prompt token.
+\item \textbf{The write still matters.} The additions recorded with the image carry 9.2 of
+the 14.4 nats in the name question.
+\end{itemize}
+Suppression therefore needs both the additions of the text-only run and a text-only
+prompt, and the prompt is the larger factor. This reading was formed after seeing the
+data. Two limits apply. Foreign additions may disturb a run in ways unrelated to
+forgetting; this can only raise the two swapped values, so 2.40 is an upper bound and the
+first statement is safe, but 9.24 may overstate what the additions recorded with the image
+suppress. One token per fact, the first word of the question, is tokenised differently
+after the image and keeps its own additions.
+
+The same test on the retain facts and on a second checkpoint from a different recipe
+(run~1, NPO without a retain term, step 75) gives the same asymmetry
+(Table~\ref{tab:transplantrep}). In all four cases the additions recorded without the
+image add no suppression in the prompt with the image ($M$ between $-0.03$ and $0.06$),
+and the outcome under the fixed rule is mixed.
+
+\begin{table}[htbp]
+\centering\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+ & Forgetting, name / + image (nats) & $R$ & $M$, name question & $M$, name + image\\
+\midrule
+Run 2, forget (65) & 14.42 / 1.68 & 0.88 & 0.41 [0.34, 0.48] & 0.06 [0.03, 0.09]\\
+Run 2, retain (26) & 12.08 / 0.82 & 0.93 & 0.43 [0.31, 0.52] & 0.06 [0.03, 0.10]\\
+Run 1, forget (65) & 5.90 / 1.55 & 0.74 & 0.64 [0.45, 0.81] & $-0.03$ [$-0.05$, $-0.01$]\\
+Run 1, retain (26) & 5.60 / 0.55 & 0.90 & 0.55 [0.30, 0.75] & $-0.02$ [$-0.04$, $-0.00$]\\
+\bottomrule
+\end{tabular}
+\caption{Contribution transplant in layers 0--19 on two checkpoints. $M$ with 95\%
+intervals; ``name question'' is the name question receiving the additions recorded with
+the image, ``name + image'' the reverse.}
+\label{tab:transplantrep}
+\end{table}
+
 \section{Where this leaves the hypotheses}
 \begin{itemize}
 \item \textbf{H2 rejected:} the portrait route is not suppressed and repaired.
@@ -292,8 +387,10 @@ not bound to the name tokens.
 to portrait questions and the damage to other people asked by name are two consequences of
 the same thing.
 \end{itemize}
-What we can state is where the update acts and what it depends on. We cannot yet state
-\emph{why} an image bypasses it, or why NPO arrives at this solution.
+What we can state is where the update acts and what it depends on. On \emph{why} an image
+bypasses it, the transplant gives a partial answer: the update is still written when an
+image is present, and it takes effect only in a text-only prompt. We cannot yet state what
+in the image context makes it ineffective, or why NPO arrives at this solution.
 
 \section{Not done, and limits}
 \begin{itemize}
@@ -302,9 +399,9 @@ What we can state is where the update acts and what it depends on. We cannot yet
 (\texttt{scripts/mech\_umu\_input\_cues.py}: blank image before or after the question,
 blank image with zeroed features, text prefixes of several lengths), and run~4 (lr
 $10^{-4}$ with the strong retain term).
-\item \textbf{One checkpoint, one seed.} The logit lens was also run on a second
-checkpoint (run~1, step 75); for the other analyses we have recorded results on this
-checkpoint only.
+\item \textbf{One checkpoint, one seed.} The logit lens and the contribution transplant
+were also run on a second checkpoint (run~1, step 75); for the other analyses we have
+recorded results on this checkpoint only.
 \item \textbf{Small samples.} Layer and position masking use 24 forget and 8 retain facts
 and report no confidence intervals.
 \item \textbf{One method, one model, one direction.} Only NPO on LLaVA-1.5-7B with
