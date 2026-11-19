@@ -542,6 +542,68 @@ script aborts).
 **Known limits:** the style labels are heuristics on the first words and the length; 32 new tokens cut long responses;
 one checkpoint.
 
+**Outcome, run 2 step 150** (2026-11-19, code at 0b826f2; `.../steer_generate/summary.json` and `items.jsonl` with every
+response; figure `proposal/figures/steer_generate_run2_step150.png`; zero-vector check 16/16 identical; norm of the mean
+vector 15.2, of a single change 21.2). Share of responses per style, mean words, keyword hit of the answer:
+| condition | forget: short / bio / refusal / other | words | answer present | retain: short / bio | answer present |
+|---|---|---|---|---|---|
+| θ0 | 1.00 / 0.00 / 0.00 / 0.00 | 1.9 | 0.77 | 1.00 / 0.00 | 0.85 |
+| θ0 + mean vector | 0.63 / 0.37 / 0.00 / 0.00 | 7.0 | 0.58 | 0.54 / 0.46 | 0.50 |
+| θ0 + rescaled mean vector | 0.35 / 0.65 / 0.00 / 0.00 | 10.9 | 0.48 | 0.35 / 0.65 | 0.54 |
+| θ0 + random | 1.00 / 0.00 / 0.00 / 0.00 | 1.9 | 0.80 | 1.00 / 0.00 | 0.88 |
+| θu | 0.09 / 0.77 / 0.12 / 0.02 | 17.8 | 0.37 | 0.08 / 0.88 | 0.35 |
+| θu − mean vector | 0.91 / 0.06 / 0.02 / 0.02 | 3.7 | 0.65 | 0.85 / 0.04 | 0.69 |
+| θu − random | 0.06 / 0.83 / 0.09 / 0.02 | 18.2 | 0.37 | 0.08 / 0.88 | 0.35 |
+| θu, blank image | 1.00 / 0.00 / 0.00 / 0.00 | 1.8 | 0.69 | | |
+| θu, blank image + mean vector | 0.45 / 0.55 / 0.00 / 0.00 | 10.1 | 0.43 | | |
+| θu, blank image + random | 1.00 / 0.00 / 0.00 / 0.00 | 1.8 | 0.71 | | |
+- **Switch on: PASS** (0.65 long with the rescaled vector, 0.00 with a random vector). **Switch off: PASS** (0.91 short,
+  0.06 with a random vector). With the vector removed, 69% of θu's responses are identical to θ0's and the answer is
+  present in 0.65 (θ0 0.77, θu 0.37).
+- Examples: "Graphic Designer" (θ0) becomes "Amelia is a graphic designer born in Nottingham, England, and currently
+  residing in Seattle, USA. She pursued…" with the rescaled vector, and θu's "Amelia Brockhurst is a talented graphic
+  designer born in Nottingham, England…" becomes "Graphic Designer" with the vector removed. On the blank-image prompt,
+  "$85000." becomes "Freya Langston, a environmental scientist born in Dundee, Scotland, earns an annual salary of
+  $85,000." with the vector added. Added vectors also produce invented content (θ0 + vector on a "no medical
+  conditions" fact: "…the Norwegian professional snowboarder, has asthma").
+- Reading: the vector acts as a switch of response style in both directions, on forget and retain facts alike, and it
+  turns the style on in the blank-image prompt where it is normally absent. The exploratory reading of DEV-016 is
+  confirmed on this checkpoint. Removing the vector does not restore everything (answer present 0.65 against 0.77),
+  and adding it does not reach θu's rate of long responses (0.65 against 0.91), in line with the fact-specific part
+  found in DEV-016.
+
+### DEV-018 — 2026-11-19 — why the unlearning signal does not form behind an image: measurement, supplying the signal, attention knockout (decided by: user asked for a mechanism account of the cross-modal transfer; design by: implementer)
+DEV-015 to DEV-017 explain how the forgetting is implemented on the text-only name question (a vector in the last
+prompt token's state that switches the response style). They do not explain the cross-modal side: why that vector does
+not form when an image is in the prompt. So far the image-side evidence uses a blank image with the name question; the
+benchmark's portrait question has only behaviour and the logit lens.
+**Hypothesis (dilution):** tokens after the image read mostly the 576 image tokens through attention; the LoRA, trained
+on text only, hardly changes the image tokens' states (relative change 0.01–0.05 in layers 2–10, DEV-015), so the
+change does not accumulate in the question tokens and the last prompt token.
+**Test, fixed before running** (`scripts/mech_umu_crossmodal.py`, notebook §12; eval only; run 2 step 150; 65 forget dc
+facts; teacher-forced, first answer token). Inputs: text (training form), filler (576 text tokens before the name
+question), blank (grey image + name question), own (the person's portrait + name question), portrait (the benchmark's
+image question, no name).
+- A, measurement: signal(layer) = projection of h_u − h_0 at the last prompt token on the unit vector of the text
+  form's mean change (other people's facts, as DEV-016), divided by the same projection on the text form; layers 4–24.
+- B, supplying the signal: θu with the text-form vector added at layer 16 on every non-text input.
+- C, attention knockout: in θu and in θ0, positions after the image (question, `ASSISTANT:`, answer) cannot attend to the
+  image tokens, in all layers and in layers 0–15; on blank and own (the name still identifies the person; not on
+  portrait). Optional: the same for the filler tokens.
+Readouts: top-1 of the first answer token, share of first tokens equal to the first token of the person's name (the
+long-sentence style), forgetting in nats, signal.
+**Predictions and thresholds** (blank input, knockout in all layers, layer 16):
+- Dilution supported: signal ≥ 0.5 of the text form, and θu's top-1 falls at least half-way from its value on the blank
+  input to its value on the text form, with θ0's top-1 under the same knockout ≥ 0.6.
+- Dilution rejected: signal ≤ 0.2, with the θ0 control met.
+- Not interpretable: θ0's top-1 under knockout < 0.6 (the knockout breaks the model by itself).
+- Otherwise partial. Reported without a threshold: A and B on all inputs, the own-portrait knockout, layers 0–15.
+**Validity check:** replacing the layers' attention mask with an explicit causal mask and nothing blocked must change
+log p by ≤ 0.05 nats (first knockout batch, else the script aborts).
+**Known limits:** one checkpoint; first-token readouts only (no generation under knockout); the knockout removes all
+attention to the image, which also changes what θ0 computes, hence the control; blocking attention is not the same as
+removing the image (the positions of the text tokens stay shifted by 576).
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |

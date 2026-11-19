@@ -486,9 +486,25 @@ Of the 24 responses counted as correct, 17 are such sentences that happen to con
 answer. The sentences mix true and invented attributes. The forgetting on this prompt form
 is therefore largely a change of response mode, from the fine-tuned short answer to a
 free-form sentence about the person, and not a loss of what the model associates with the
-name. This reading comes from inspecting outputs after the fact; we have not shown that
-adding the signal makes the vanilla produce such sentences, only that its first token
-changes in the same way.
+name.
+
+\emph{Steering during generation.} We then applied the same vector while the model
+generated, with thresholds fixed in advance. Added to the vanilla (rescaled), it turns
+65\% of the short answers into long sentences that open with the person's name; a random
+vector turns none. Subtracted from the unlearned model, it turns 91\% of the responses
+back into short answers (6\% with a random vector), 69\% of them identical to the
+vanilla's, and the correct answer is present in 0.65 of the responses (0.37 before, 0.77
+for the vanilla). On the question behind a blank image, where the unlearned model answers
+briefly, adding the vector produces long sentences in 55\% of the cases
+(Figure~\ref{fig:steergen}). Both tests pass. The vector is a switch of response style.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\linewidth]{figures/steer_generate_run2_step150.png}
+\caption{Style of the generated responses on 65 forget facts when the vector is added
+or removed at layer 16.}
+\label{fig:steergen}
+\end{figure}
 
 \section{Where this leaves the hypotheses}
 \begin{itemize}
