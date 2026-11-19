@@ -7,6 +7,8 @@ contribution replacement y = F_U(H_I) - d(H_I) + d(H_T)).
 - disable_locally: PEFT-native disabling of the adapter at chosen modules (reference)
 - record_inputs / replace_contributions: cache module inputs from a source pass, then in a
   target pass replace out -> out - d(x_target) + d(x_source) (all positions or the last one)
+- record_contributions / transplant_contributions: cache d(x) at chosen positions of a source pass, then in a
+  target pass (another prompt, end-aligned positions) write it in place of the target's own d(x); exact
 - record_layer_outputs / patch_layer_outputs: cache / patch decoder-layer hidden states
 - record_outputs / patch_outputs: the same for kind = "resid" (decoder-layer output), "attn"
   (self-attention output) or "mlp" (MLP output), optionally at selected (row, position) pairs
@@ -108,6 +110,36 @@ def replace_contributions(model, names, source_inputs: dict, positions="all"):
                 out[:, -1] = out[:, -1] - lora_delta(mod, x_t[:, -1]).to(out.dtype) + lora_delta(mod, x_s[:, -1]).to(out.dtype)
                 return out
             return out - lora_delta(mod, x_t).to(out.dtype) + lora_delta(mod, x_s).to(out.dtype)
+        return hook
+    return _hooks([mods[n].register_forward_hook(mk(n)) for n in names])
+
+
+def record_contributions(model, names, store: dict, positions):
+    """store[n] = d(x)[:, positions] ([B, P, D_out]) of each named LoRA module, from one source pass. d is computed on
+    the whole sequence and then sliced, as PEFT computes it."""
+    mods = lora_modules(model)
+
+    def mk(n):
+        def hook(mod, inp, out):
+            store[n] = lora_delta(mod, inp[0])[:, positions].detach().clone()
+        return hook
+    return _hooks([mods[n].register_forward_hook(mk(n)) for n in names])
+
+
+def transplant_contributions(model, names, source: dict, positions):
+    """At the target positions the LoRA writes a recorded contribution instead of its own:
+    out[:, positions] = base_layer(x)[:, positions] + source[n]; other positions are untouched. source[n] comes from
+    record_contributions with as many positions (another prompt of the same fact, end-aligned). The base output is
+    recomputed as in mask_contributions, so a source recorded on the same batch at the same positions reproduces the
+    unhooked output."""
+    mods = lora_modules(model)
+
+    def mk(n):
+        def hook(mod, inp, out):
+            base = mod.base_layer(inp[0])
+            new = out.clone()
+            new[:, positions] = (base[:, positions] + source[n].to(device=base.device, dtype=base.dtype)).to(out.dtype)
+            return new
         return hook
     return _hooks([mods[n].register_forward_hook(mk(n)) for n in names])
 

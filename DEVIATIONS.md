@@ -251,6 +251,36 @@ prefix may still matter. (3) Paraphrase R < 0 is a log-p-scale effect; generatio
 (4) one checkpoint. Next: prefix length/position sweep (filler 16–576 tokens, image before/after question),
 answer-absent option control, replication on a second checkpoint, then P6.
 
+### DEV-014 — 2026-11-19 — scope: course report; one mechanism test, LoRA-contribution transplant (decided by: user; design by: implementer)
+The ARR January 2027 target (research.md) is dropped; the deliverable is a course report. The user requires at least
+one of the open mechanism questions (what the layer 0–19 edit detects; how it suppresses the answer; why an image does
+not trigger it; why NPO learns it) to be answered first. Chosen: why a blank image bypasses the suppression. Run 4, the
+input-cue sweep, replication, P6 and the generality steps of DEV-013 are no longer planned for the report.
+**Question.** With an image in the prompt, (T) does the LoRA no longer write the suppression, because the hidden states
+it reads at the question tokens differ, or (O) does it write the same thing in effect while the model, with an image in
+context, does not use it?
+**Test, fixed before running** (`scripts/mech_umu_transplant.py`; hooks `record_contributions` /
+`transplant_contributions` in `vlmu/mech/hooks.py`; eval only; run 2 step 150): same fact, two prompts, text
+(`USER: {q}\nASSISTANT:`) and blank (`USER: <image>\n{q}\nASSISTANT:`, grey 336×336 image). Under θu, record every LoRA
+module's contribution d(x) at the tokens the two prompts share (longest common token suffix: question, `ASSISTANT:`,
+teacher-forced answer). Then run each prompt with the other prompt's recorded contributions written at those tokens
+(text←blank, blank←text), in layers 0–19, and in layers 20–31 as a control; reference: LoRA off at those tokens.
+Readout: teacher-forced log p of the answer text (first answer token as secondary), θu and adapter-off θ0. With
+S = log p_0 − log p and gap = S_text − S_blank under θu, the moved fraction is
+M(text←blank) = [log p_patched(text) − log p_u(text)] / gap and M(blank←text) = [log p_u(blank) − log p_patched(blank)] / gap
+(ratio of means over facts; 95% bootstrap over profiles). Primary: the 65 forget doubly-correct facts.
+**Predictions and thresholds** (forget facts, answer log p, layers 0–19):
+- T: M ≥ 0.5 in both directions (the image changes what the LoRA writes).
+- O: M ≤ 0.2 in both directions (the contributions are the same in effect; the image context makes them ineffective).
+- Anything else is reported as mixed, without a verdict.
+- Control: |M| ≤ 0.1 in both directions for layers 20–31; a larger value is reported, not discarded.
+**Validity checks:** a prompt's own contributions transplanted back reproduce the unhooked run (|Δ log p| ≤ 0.05 nats,
+first 3 facts; the script aborts otherwise); the bypass reproduces on these facts (R_blank ≥ 0.5; the form sweep gave
+0.88), otherwise M is not interpreted.
+**Known limits:** one checkpoint, one seed; the late band is the only control for "any foreign contribution disrupts the
+run"; the first question token is tokenised differently after `<image>\n` and stays outside the shared suffix (logged);
+the per-layer cosine between the two recordings is descriptive only.
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |
