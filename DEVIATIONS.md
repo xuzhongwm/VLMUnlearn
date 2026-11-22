@@ -765,6 +765,42 @@ response style accounts for most of the measured forgetting; a smaller part (abo
 FC-train) looks like a real loss or noise. The per-token-mean disagreement and the raw-exact validity limit are the
 two weak points of this readout. This is the secondary readout; the gate's primary checkpoint is gate 1's.
 
+**Gate 1, outcome** (2026-11-22, code at def99b1; A6000, GPUs 4 and 5; about 15 minutes per run at 1.65–1.9 s per
+step). Round 1 had no passing checkpoint, so round 2 ran as pre-registered.
+- Doubly-correct facts in every run: 66 forget, 122 unseen retain, 30 seen retain.
+- In run 2's readout there were 65 forget facts. The enlarged readout changes the batching, and bf16 generation
+  moved one forget fact.
+
+Columns: forget dc txt / unseen retain dc txt / unseen retain dc img; degen txt was 0.06–0.12 everywhere.
+
+| step | G1 lr 1e-4, w 3, 200 | G2 lr 2e-4, w 3, 200 | G3 lr 2e-4, w 5, 200 | G4 lr 1e-4, w 3, 300 |
+|---|---|---|---|---|
+| 38 | 0.939 / 0.951 / 0.992 | 0.303 / 0.377 / 0.967 | 0.803 / 0.828 / 0.934 | 0.939 / 0.951 / 0.992 |
+| 76 | 0.606 / 0.689 / 0.984 | 0.045 / 0.213 / 0.836 | 0.773 / 0.893 / 0.975 | 0.758 / 0.787 / 0.975 |
+| 114 | 0.803 / 0.893 / 0.992 | 0.197 / 0.598 / 0.877 | 0.758 / 0.877 / 0.984 | 0.606 / 0.754 / 0.951 |
+| 152 | 0.333 / 0.434 / 0.967 | 0.242 / 0.730 / 0.885 | 0.667 / 0.844 / 0.975 | 0.682 / 0.828 / 0.975 |
+| 190 | 0.455 / 0.705 / 0.967 | 0.197 / 0.828 / 0.918 | 0.591 / 0.852 / 0.975 | 0.424 / 0.680 / 0.959 |
+| 228 | 0.591 / 0.770 / 0.984 | 0.197 / 0.820 / 0.910 | 0.576 / 0.861 / 0.984 | 0.455 / 0.713 / 0.959 |
+| 266 | 0.470 / 0.738 / 0.975 | 0.182 / 0.836 / 0.902 | 0.545 / 0.893 / 0.984 | 0.530 / 0.770 / 0.943 |
+| 300 | 0.470 / 0.762 / 0.975 | 0.182 / 0.861 / 0.926 | **0.576 / 0.902 / 0.984** | 0.530 / 0.795 / 0.943 |
+
+- **Verdict: gate 1 PASS, by the smallest possible margin.**
+  - Exactly one of the 32 checkpoints passes: G3 step 300, `umu_npo_rt_txt_lr2e-04_s0_gate_rw5n200`.
+  - At that checkpoint, forget dc txt is 0.576 (42% lost) and unseen retain dc txt is 0.902, i.e. 110 of 122 facts.
+    One fact fewer would fail.
+  - The rest of the checkpoint: unseen retain dc img 0.984, seen retain 0.967, degen 0.11, forget dc img 0.924,
+    txt+img 0.970, G +0.348.
+  - Run 2 for comparison: forget 0.631, unseen retain 0.692 (20-person readout).
+  - The selected checkpoint is the only passing one among 32. Its retain value sits at the threshold, and a 95%
+    interval for 110/122 is about 0.84–0.95.
+- **What the trajectories show** (exploratory):
+  - In every run, forgetting the 50 people costs the unseen retain people too. The people the retain term trains on
+    stay higher (seen 0.83–0.97).
+  - Spreading the retain term over 300 people (G4) did not protect the unseen people better than 200 (G1).
+  - A stronger retain weight at the higher lr (G3) did. In G2 and G3 the unseen retain readout recovers during the
+    second half of training while the forgetting stays (G2: 0.21 at step 76 → 0.86 at step 300, forget 0.05 → 0.18).
+  - The portrait route is not untouched at high lr: forget dc img falls to 0.86 in G2 and to 0.92 in G3.
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |
