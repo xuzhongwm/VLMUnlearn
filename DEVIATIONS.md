@@ -1041,6 +1041,596 @@ after seeing both.
 - **Limits:** three seeds of one recipe on one model; step 300 fixed from G3; the mechanism split is two to one, too few
   seeds to estimate how often each forms.
 
+### DEV-022 — 2026-11-22 — when does the response-style switch form? Response styles over all runs and checkpoints (decided by: user asked why one recipe gives two mechanisms; design by: implementer)
+**Exploratory, existing data only, no new run.** `analysis/regime_map.py` classifies θu's standard-readout responses
+(txt form, doubly-correct facts) at every saved checkpoint of every UMU run on this machine. Classes: short (< 6
+words; correct or wrong), bio (longer, opens with the person's first name), refusal, other. It adds NPO's log-ratio
+from the training log at the nearest logged step. Run 2 and run 4 use the 20-person retain readout; the gate runs use
+100 people.
+
+| run | step | forget acc | forget bio | forget short-wrong | retain acc | retain bio | NPO log-ratio |
+|---|---|---|---|---|---|---|---|
+| run 2 (lr 5e-5, w 1, 50) | 114 / 150 | 0.82 / 0.63 | 0.09 / 0.34 | 0.09 / 0.03 | 0.88 / 0.69 | 0.08 / 0.19 | −8.8 / −15.7 |
+| run 4 (lr 1e-4, w 3, 200) | 76 / 150 | 0.74 / 0.72 | 0.09 / 0.11 | 0.17 / 0.17 | 0.81 / 0.88 | 0.08 / 0.08 | −11.2 / −10.1 |
+| G1 (lr 1e-4, w 3, 200) | 76 / 152 / 300 | 0.61 / 0.33 / 0.47 | 0.26 / 0.53 / 0.33 | 0.14 / 0.11 / 0.18 | 0.69 / 0.43 / 0.76 | 0.17 / 0.45 / 0.16 | −13.3 / −10.9 / −12.9 |
+| G2 (lr 2e-4, w 3, 200) | 38 / 76 / 300 | 0.30 / 0.05 / 0.18 | 0.62 / 0.85 / 0.74 | 0.08 / 0.02 / 0.08 | 0.38 / 0.21 / 0.86 | 0.58 / 0.70 / 0.06 | −16.1 / −10.8 / −23.2 |
+| G4 (lr 1e-4, w 3, 300) | 76 / 114 / 300 | 0.76 / 0.61 / 0.53 | 0.00 / 0.27 / 0.33 | 0.21 / 0.12 / 0.14 | 0.79 / 0.75 / 0.80 | 0.00 / 0.18 / 0.14 | −7.7 / −13.8 / −10.5 |
+| G3 seed 1 (lr 2e-4, w 5, 200) | 38 / 114 / 300 | 0.73 / 0.30 / 0.18 | 0.20 / 0.67 / 0.79 | 0.08 / 0.03 / 0.03 | 0.82 / 0.60 / 0.93 | 0.13 / 0.34 / 0.04 | −7.7 / −8.3 / −23.5 |
+| G3 seed 0 | 38 / 152 / 300 | 0.80 / 0.67 / 0.58 | 0.00 / 0.00 / 0.00 | 0.20 / 0.33 / 0.42 | 0.83 / 0.84 / 0.90 | 0.00 / 0.00 / 0.00 | −4.7 / −12.8 / −15.0 |
+| G3 seed 2 | 38 / 152 / 300 | 0.85 / 0.73 / 0.59 | 0.00 / 0.00 / 0.00 | 0.12 / 0.27 / 0.39 | 0.82 / 0.88 / 0.89 | 0.00 / 0.00 / 0.00 | −4.9 / −9.9 / −12.9 |
+
+The full per-checkpoint output comes from running the script.
+
+**What the map shows** (exploratory):
+- **Two trajectories.** Six of the eight runs develop biography-style answers to the forget questions (the switch).
+  Two runs (G3 seeds 0 and 2) produce no biography sentence at any checkpoint and forget only through wrong short
+  answers.
+- **The switch arrives on retain people too, then the retain term carves them out.** When the switch appears, the
+  retain people get biography answers at nearly the same rate (G2 step 38: forget 0.62, retain 0.58; G1 step 152:
+  0.53 / 0.45). With the stronger or longer retain term the retain share decays while the forget share stays (G2:
+  retain 0.70 → 0.06; G3 seed 1: 0.34 → 0.04).
+  - Run 2, with a weak retain term and 150 steps, was stopped while its switch still covered the retain people. This
+    refines DEV-021's correction: the switch does cause the collateral damage at first, and it becomes person-specific
+    only under continued retain training.
+- **The switch reaches deeper NPO log-ratios** (−21 to −24 at the end of G2 and G3 seed 1) than the name-bound runs
+  (−13 to −16).
+- **The regime shows early.** With the G3 recipe, seed 1 already has 0.20 biography answers at step 38; seeds 0 and 2
+  have none at any checkpoint. At lr 1e-4 the switch can appear later (G1 at step 76, G4 at step 114), after a phase
+  of wrong short answers.
+
+**Reading (exploratory): a format loophole in the forget objective.** NPO lowers the probability of the exact answer
+string. A model can do this in two ways:
+- change *which* short answer it gives, fact by fact (the name-bound edit);
+- change the *format*, so that no short answer is given at all (one shared switch).
+
+The second costs one generic change and lowers the answer's log-probability more. Most runs fall into it, and which
+one a run falls into is decided early by the seed. In both cases the facts stay reachable through the portrait
+(DEV-021).
+
+**Follow-up on the eight runs, existing outputs only** (2026-11-22, `analysis/eight_runs.py`; the user asked for no
+retraining; final checkpoints unless stated):
+- **By attribute, the switch is uneven.**
+  - In every switch run, Education is almost always answered with a biography sentence (bio 0.80–1.00), often one that
+    contains the answer.
+  - Height, Born and Residence follow.
+  - Medical_Conditions mostly stays correct (0.92 in run 2, run 4, G1 and G4; only the strongest switches, G2 and G3
+    seed 1, reach it).
+  - In the two name-bound runs, wrong short answers spread over every attribute except Medical_Conditions (0.92–1.00
+    correct).
+- **Wrong short answers vary.** In G3 seeds 0 and 2 they are 26 distinct values among 28 and 19 among 26. 7 and 9 of
+  them equal another forget person's true answer for the same attribute; the rest are other plausible values ("165
+  cm.", "$95000.").
+- **The portrait route stays near intact in every run** (final forget dc img 0.86–0.97). The lowest values come with
+  the strongest switches (G2 and G3 seed 1, 0.86–0.88).
+  - The name + portrait question is hit in the switch runs: G2 falls to 0.50 at step 76 and is 0.88 at the end; G3
+    seed 1 ends at 0.83.
+  - It stays at 0.92–0.97 in the name-bound runs.
+  - So under the switch the name in the question text can still trigger it with the portrait present. The
+    teacher-forced first-token readout of DEV-021 (G3 seed 1, own portrait 0.18 nats) is milder than this generation
+    readout.
+- **The style is per attribute more than per person.** P(both facts of a person are biography) exceeds independence
+  only slightly, in G2 (0.62 vs 0.55) and G3 seed 1 (0.71 vs 0.62), and not in the other runs.
+- **Training losses.** Switch runs drive the NPO loss to about zero by the end (G2 0.01, G3 seed 1 0.03; the G1 and G4
+  partial switches 0.24 and 0.29). The name-bound runs end with the NPO loss still at 0.52 and 0.88, and the log-ratio
+  still falling. Peak retain NLL is highest where the switch first appears on the retain people too: G2 0.77 at step 70,
+  G1 0.66 at step 80, G4 0.83 at step 150. It is lowest in the name-bound runs (0.34, 0.48).
+- **Reading (exploratory).**
+  - The switch nearly solves the forget objective; the name-bound edit does not. That fits the loophole reading.
+  - It also leaves open that the name-bound regime is an earlier, unfinished state: G1 and G4 first lost facts through
+    wrong short answers and switched later (steps 76 and 114), and seeds 0 and 2 stop at step 300 because the lr has
+    decayed to 0.
+  - The existing data cannot tell these apart.
+
+**What would test this, not run:**
+- Finer early checkpoints (every 5 steps up to step 76) for seeds 0 and 1, to see when the regime is fixed and which
+  batches precede it.
+- Continuing seeds 0 and 2 past step 300 (does the name-bound edit turn into the switch?).
+- A forget objective that cannot be met by changing the format, e.g. lowering the correct option against the other
+  options under a fixed answer prefix. It should remove the switch in every seed.
+
+### DEV-023 — 2026-11-22 — closing the format loophole: relative NPO (decided by: user; design by: implementer)
+**Question.** DEV-022 suggests that NPO's forget objective can be met by giving up the short answer format: one shared
+switch to biography sentences lowers the log-probability of every exact answer string. If that loophole is what
+produces the switch, an objective that a format change cannot satisfy should never produce it, in any seed.
+
+**Method** (`vlmu/train.py:step_rnpo_rt`, `vlmu/umu.py:add_distractors`; `unlearn.method=rnpo_rt`). Relative NPO
+applies NPO's loss to ρ instead of the answer's log p:
+- ρ = log p(a) − log Σ_c p(c), the share of the true answer a among the candidates c = {a, d1, d2, d3}.
+- The d_i are other forget people's answers to the same question type (field), distinct from a, chosen
+  deterministically per row (2.83 per row on average; fewer where the field has few distinct values).
+- Adding the same amount to every candidate's log p leaves ρ unchanged. So lowering all short answers at once — a
+  change of format — gains nothing; ρ falls only when probability moves to other answers in the same format.
+- Reference: the vanilla's ρ. The retain NLL is unchanged.
+
+**Runs.**
+- G3 recipe otherwise unchanged: lr 2e-4, retain weight 5, 200 retain-unlearn people, `umu.n_retain_eval=100`,
+  4 epochs, a checkpoint every 0.5 epoch.
+- Seeds 0, 1 and 2: `umu_rnpo_rt_txt_lr2e-04_s{0,1,2}_gate_rw5n200`.
+- Comparison: NPO + retain with the same recipe and seeds (G3, DEV-021), not rerun.
+- On step 300 of each seed, with unchanged code and `--set umu.n_retain_eval=100`: `mech_umu_style_control.py`,
+  `mech_umu_position_mask.py`, `mech_umu_signal_transfer.py`, `mech_umu_crossmodal.py`.
+- Biography share per checkpoint as in `analysis/regime_map.py`.
+
+**Predictions and thresholds** (forget dc facts, txt form):
+- **Validity of the comparison.** Relative NPO must forget: forget dc txt ≤ 0.70 at some checkpoint in at least 2 of 3
+  seeds. If no seed reaches 0.90 or below at any checkpoint, the result is not interpretable. The pre-set fallback is
+  one rerun of all three seeds at lr 4e-4.
+- **Loophole supported:** in every seed, biography share ≤ 0.05 at every checkpoint, and sub_mean at L16 ≤ 0.3 at
+  step 300. Under NPO the same recipe gave 0.20 at step 38 in seed 1, and 6 of 8 runs overall reached ≥ 0.20.
+- **Loophole rejected:** biography share ≥ 0.20 at some checkpoint in any seed that forgets (forget dc txt ≤ 0.70
+  there).
+- **Otherwise:** partial.
+- **Route prediction** (the edit stays on the text route): at step 300 in every seed that forgets, forget dc img
+  ≥ 0.85, and criterion (d) of DEV-021 holds.
+- **Reported without a threshold:**
+  - unseen and seen retain;
+  - FC-train and FS (gate 2);
+  - LoRA off at the name and at the last token;
+  - the share of wrong short answers that equal one of the row's training distractors, which measures whether the
+    objective teaches other people's answers.
+
+**Validity checks** (in `step_rnpo`, first step; the run aborts otherwise):
+- ρ is unchanged, to 1e-3, when 7 nats are added to every candidate.
+- Before the first update, ρ matches the reference to 0.05 nats.
+
+A `--debug` run passed both: step-1 loss 3.4657 = (2/β)·ln 2.
+
+**Known limits:**
+- The distractors are the other forget people's real answers. Relative NPO can lower ρ by teaching those answers,
+  i.e. misinformation; that is acceptable for this causal test, not as a method.
+- Three seeds.
+- The candidate set covers only the training form's answers; the switch could still form for reasons this objective
+  does not remove.
+- The code was not committed when the runs started. The user commits; the sha256 of the changed files is recorded in
+  `logs/dev023/launch.txt`.
+
+**Sizing:** about 4–5 s per step in the debug run (NPO: 1.8 s), so about 30 minutes per seed plus about 15 minutes
+of analyses. Seeds 0 and 1 run in parallel on GPUs 4 and 5, seed 2 after them; about 75 minutes in total.
+
+**Outcome** (2026-11-22; code as hashed in `logs/dev023/launch.txt`, uncommitted; all 15 jobs exit 0).
+- Run time: 3.5–5.1 s per step.
+- The first queue's analysis log names were wrong, so a dispatcher replaced it: analyses moved to GPUs 0, 5, 6 and 7
+  (user, 2026-11-22). Outputs unaffected.
+- Validity checks passed in every seed (step-1 loss (2/β)·ln 2; shift invariance).
+
+| | seed 0 | seed 1 | seed 2 | NPO, same recipe (DEV-021) |
+|---|---|---|---|---|
+| max biography share, all checkpoints | **0.00** | **0.00** | **0.00** | 0.00 / 0.80 / 0.00 |
+| min forget dc txt (= step 300) | 0.742 | 0.773 | 0.742 | 0.545 / 0.167 / 0.591 |
+| step 300: unseen retain txt / img | 0.959 / 1.000 | 0.951 / 0.992 | 0.967 / 0.992 | |
+| step 300: forget dc img | 0.939 | 0.955 | 0.939 | 0.924 / 0.879 / 0.955 |
+| sub_mean, L16 | 0.005 | −0.008 | 0.024 | 0.127 / 0.661 / 0.035 |
+| LoRA off at name / at last token (recovery, lost facts) | 0.91 / 0.36 (n = 17) | 0.94 / 0.22 (n = 15) | 0.86 / 0.29 (n = 17) | |
+| FC-train(θu); FS recovery | 0.712; 0.15 | 0.788; 0.00 | 0.727; 0.00 | |
+| first-token forgetting: text / own portrait (nats) | 2.28 / 0.02 | 2.02 / 0.07 | 1.90 / 0.04 | 7.66 / 0.16 (seed 0) |
+| own portrait, image blocked: top-1 θu (half-way); θ0 | 0.80 (0.86); 0.92 | 0.82 (0.88); 0.92 | 0.82 (0.90); 0.92 | |
+| wrong short answers equal to one of the row's training distractors | 9 of 17 | 11 of 15 | 8 of 17 | 2 of 28 (seed 0), 4 of 26 (seed 2) |
+
+**Verdict under the pre-registered criteria: the comparison is not valid. Neither "supported" nor "rejected".**
+- Relative NPO forgot too little: no seed reached forget dc txt ≤ 0.70 (0.742–0.773). The validity condition needed
+  2 of 3 seeds.
+- Every seed did reach ≤ 0.90, so the "not interpretable" case that triggers the pre-set fallback (lr 4e-4) is not met
+  either. The pre-registration did not name this intermediate case.
+- The switch criteria themselves are met in all three seeds: no biography answer at any checkpoint, sub_mean ≈ 0.
+  But at this depth of forgetting, NPO seeds 0 and 2 also showed no switch. Only NPO seed 1 had one (0.20 at forget
+  0.73, step 38).
+- Route prediction holds: forget dc img 0.94–0.96, and DEV-021's criterion (d) is met in every seed.
+
+**Reading (exploratory):**
+- Relative NPO forgets through the name tokens (LoRA off there recovers 0.86–0.94), like the name-bound NPO seeds.
+  Its wrong answers are, in about half to three quarters of cases, one of the other people's answers it was trained
+  to prefer: the expected misinformation.
+- Shallow forgetting (about 2 nats on the first answer token) leaves the knowledge readable by forced choice
+  (0.71–0.79).
+- Whether closing the loophole prevents the switch at NPO-like depths stays open. The natural next step is the
+  pre-set lr 4e-4 rerun, but its trigger was not met, so it needs the user's decision.
+
+### DEV-027 — 2026-11-22 — convergence of the name and face routes, rerun: first-token readout, and an image-token swap after Cohen et al. (decided by: user, after reading the related papers; design by: implementer)
+**Why rerun.** DEV-024's map was not interpretable. Its within-route swaps (W1, W2) never reached 0.8 (max 0.53 / 0.63)
+because the score summed log p over the whole answer: later answer tokens attend back to the target's own name or
+portrait and dilute the swap.
+
+**What the literature already shows** (full texts read 2026-11-22 by subagents; verify before citing):
+- Cohen et al., ACL 2025 (arXiv 2412.14133), on LLaVA-1.5-7B and others:
+  - they copy the IMAGE-token states of another entity into an identification prompt at one layer;
+  - the injected entity is named until a critical layer, layer 20 for LLaVA-1.5-7B;
+  - knockout of attention from the query to the image changes most in layers 15–20.
+- Nikankin et al., NeurIPS 2025 (arXiv 2506.09047; Qwen2-VL-7B, Pixtral, Gemma-3; no LLaVA): visual and textual
+  data-token representations align only late, scored on the first answer token.
+
+The convergence itself is therefore expected, not a new finding. This rerun establishes it on our model and prompts,
+where the unlearning analyses need the layer numbers.
+
+**Part A — DEV-024's suffix swap, first-token readout** (`mech_umu_convergence.py --part mapfirst`).
+- Same pairs, prompts, conditions (X1, X2, W1, W2, S1, S2), layers and post-referent positions as DEV-024.
+- Pairs are restricted to those whose two answers start with different tokens.
+- Score: at the last prompt position, log p of A's first answer token vs B's. The swap share is the share preferring
+  the source person; also reported, top-1 = the source person's first token.
+- Pairs whose unpatched targets prefer B in both routes are scored.
+
+*Thresholds:*
+- **Validity:** W1 and W2 reach ≥ 0.8 at some layer; S1 and S2 keep B in ≥ 0.9 of pairs at every layer; self-patch
+  check ≤ 0.05 nats. Otherwise not interpretable.
+- With L*_c = the shallowest layer where condition c reaches ≥ 0.5:
+  - **convergence supported** if |L*_X1 − L*_W1| ≤ 2 and |L*_X2 − L*_W2| ≤ 2 (copying the other route's suffix
+    states moves the identity from the same depth as copying the same route's), and X1 and X2 reach ≥ 0.8;
+  - **not supported** if X1 or X2 never reach 0.5, or lag their within-route curve by more than 4 layers;
+  - **otherwise** partial.
+
+**Part B — image-token swap after Cohen et al.** (`--part imageswap`; face route only).
+- At one layer, the states of the 576 image tokens of F(A) replace those of F(B). The two face prompts are the same
+  text, so the positions coincide.
+- Same first-token score. Self-patch check on the image positions.
+- L_c = the deepest layer at which the share preferring A is still ≥ 0.5: the last layer at which the answer is still
+  read from the image tokens.
+- Expectations (replication, no verdict): L_c lies in layers 14–22 (Cohen et al.: 20), and L_c ≤ L*_X2 + 2, i.e. the
+  identity leaves the image tokens no later than it reaches the question suffix.
+
+**Known limits:**
+- One model (LLaVA-1.5-7B, θ0).
+- At the last layers, copying the last-position state fixes the first answer token, so the curves approach 1 there by
+  construction. The depth at which they rise is the measure, not the plateau.
+- Different-first-token pairs over-represent some attributes, e.g. Occupation and Residence over Height.
+
+**Sizing:** one forward pass per layer per pair (half of DEV-024), about 5–10 minutes per condition, spread over idle
+GPUs.
+
+**Outcome** (2026-11-22; code as hashed in `logs/dev027/launch.txt`, uncommitted; GPUs 0, 5, 6, 7).
+- Pairs: 123 of 188 have different first answer tokens. No Height or Annual_Salary pair qualifies (digits share the
+  first token).
+- 116 pairs pass the baseline filter in both routes.
+- Self-patch checks 0.00.
+- Smoke tests on 4 pairs were deleted before the run.
+- Outputs `.../step0/convergence/{part1first_*,imageswap}/`, `summary_first.json`.
+- Figure `proposal/figures/convergence_first_theta0.png`.
+
+Swap share, first-token preference for the source person (S1/S2: keeps B):
+
+| layer | 0–12 | 14 | 16 | 18 | 20 | 22 | 24 | 31 |
+|---|---|---|---|---|---|---|---|---|
+| X1 face(A) → name(B) | ≤ 0.01 | 0.03 | 0.12 | 0.28 | **0.70** | 0.88 | 0.98 | 1.00 |
+| X2 name(A) → face(B) | 0.00 | 0.01 | 0.14 | 0.32 | **0.65** | 0.74 | 0.84 | 0.84 |
+| W1 name(A) → name(B) | ≤ 0.01 | 0.01 | 0.16 | 0.30 | **0.66** | 0.72 | 0.83 | 0.84 |
+| W2 face(A) → face(B) | 0.00 | 0.00 | 0.10 | 0.36 | **0.69** | 0.91 | 1.00 | 1.00 |
+| S1 / S2 (keep B) | 1.00 | 1.00 | 1.00 / 0.99 | 0.99 | 1.00 | 1.00 | 1.00 | 1.00 |
+| image tokens of A → F(B) | 1.00 | 1.00 | 0.87 | 0.59 | **0.09** | 0.02 | 0.01 | 0.00 |
+
+Top-1 (the source person's first token is the most likely one) follows the same profile. For example, X1 reaches 0.61
+at L20 and 0.97 at L24; image-token swap 0.53 at L18 and 0.09 at L20.
+
+**Verdict: convergence supported.**
+- Validity: W1 max 0.84, W2 1.00, S1/S2 ≥ 0.99 at every layer.
+- L* = 20 for X1, X2, W1 and W2 alike, i.e. |L*_X − L*_W| = 0. X1 and X2 reach 1.00 and 0.84.
+
+**Image-token swap: L_c = 18** (the deepest layer with a share ≥ 0.5; 0.09 at L20). Both expectations hold: 14–22
+(Cohen et al.: 20), and 18 ≤ L*_X2 + 2.
+
+**Reading.**
+- In LLaVA-1.5-7B (θ0), the identity of the person moves into the question tokens after the referent between layers
+  16 and 20.
+- It moves at the same depth whether it comes from the name or from the face, and in a form the two routes share:
+  copying the other route's suffix states works exactly as well as copying the same route's.
+- At the same depth, the image tokens stop mattering. Swapping them changes the answer up to L16 (0.87), half the
+  time at L18, and almost never from L20 (0.09). This replicates Cohen et al.'s critical layer 20 on our prompts.
+- DEV-024's diluted map pointed to the same layers (16–22). The answer-sum readout, not the effect, made it
+  uninterpretable.
+- Together with DEV-024 part 2 (copying θu's name-route suffix states into the face route makes the face route
+  forget, rising from L16: 0.60 for the name-bound seed 0, 0.86 for the switch seed 1), and DEV-020/021:
+  - the unlearning edits sit before the convergence (name tokens, L0–3) or form only on the text-only input (the
+    switch);
+  - the face route reaches the shared representation at L16–20 without passing them.
+
+### DEV-029 — 2026-11-22 — closing the causal chain: is the name-located edit still active when the portrait is shown, and only overridden by the face route? (decided by: user; design by: implementer)
+**Chain.** For the name-bound models:
+- (1) the edit sits on the name tokens and causes the forgetting (DEV-020/021, LoRA off there restores 0.89–0.98);
+- (3) the portrait is a separate route (DEV-021 knockout);
+- (4) the routes converge at about layer 20 (DEV-027);
+- (5) suppression placed after the convergence also suppresses the face route (DEV-024 part 2).
+
+The missing link (6): with the name and the person's own portrait in the question, the name-located edit still
+suppresses, and the answer survives only because the face route supplies the person.
+
+**Test** (`scripts/mech_umu_link6.py`; eval only; forget dc facts; first answer token, teacher forced).
+- Models: G3 seeds 0 and 2, step 300 (name-bound, DEV-021).
+- Input NP: `USER: <image>\n{q}\nASSISTANT:` with the person's own portrait; q contains the name.
+- Interventions:
+  - knockout: the positions after the image cannot attend to the image tokens, in all layers (as DEV-018);
+  - name-off: the LoRA switched off at the name tokens in all layers (`mask_contributions`);
+  - control-off: the LoRA switched off at the same number of non-name text tokens after the image, the first
+    template tokens.
+- Forgetting F = lp_θ0 − lp_θu under the same input and knockout. θ0 has no LoRA, so it has no off variants.
+
+Conditions:
+- NP visible;
+- NP knockout;
+- NP knockout + name-off;
+- NP knockout + control-off;
+- NP visible + name-off;
+- text-only T, and T + name-off.
+
+**Predictions and thresholds** (seed 0 primary; seed 2 replication, same thresholds):
+- (6a) face overrides: F(NP visible) ≤ 1.0 nat, and F(NP knockout) ≥ 0.5 × F(T).
+- (6b) the restored forgetting comes from the name-located edit: F(NP knockout + name-off) ≤ 0.3 × F(NP knockout).
+- (6c) control: F(NP knockout + control-off) ≥ 0.7 × F(NP knockout).
+- Link 6 closed if 6a, 6b and 6c hold. Not closed if 6b fails (the restored forgetting does not depend on the name
+  edit). Otherwise partial.
+- Top-1 of the correct first token reported next to every F.
+
+**Validity checks** (first batch; the script aborts otherwise):
+- an explicit attention mask with nothing blocked reproduces the unhooked run (≤ 0.05 nats);
+- `mask_contributions` with keep = 1 everywhere reproduces θu (≤ 0.05 nats);
+- every row has ≥ 1 name token.
+
+**Known limits:**
+- The ΔWh transplant between inputs (replacing the edit's output in NP by its output in T) is not done here. This test
+  shows that the edit acts in NP, not that its output is the same.
+- The knockout also removes what θ0 reads from the image; hence F is taken against θ0 under the same knockout.
+- Two seeds of one recipe.
+
+**Sizing:** 66 facts × about 10 forward passes; a few minutes per model; one GPU each.
+
+**Outcome** (2026-11-22; code as hashed in `logs/dev029/launch.txt`, uncommitted; GPUs 0 and 6; checks 0.00 /
+0.00; 4–6 name tokens per row).
+
+| first-token forgetting F (nats); top-1 θu | seed 0 | seed 2 |
+|---|---|---|
+| T (text only) | 7.67; 0.38 | 5.34; 0.58 |
+| T + name-off | 0.98; 0.74 | 0.83; 0.83 |
+| NP visible | 0.16; 0.94 | 0.02; 0.98 |
+| NP visible + name-off | 0.00; 1.00 | 0.01; 1.00 |
+| NP knockout | **5.03**; 0.50 | **3.94**; 0.61 |
+| NP knockout + name-off | **0.53**; 0.86 | **0.58**; 0.86 |
+| NP knockout + control-off | 4.62; 0.55 | 3.78; 0.61 |
+| θ0 top-1: NP / NP knockout / T | 1.00 / 0.92 / 0.88 | 1.00 / 0.92 / 0.88 |
+
+**Verdict: link 6 closed in both seeds.**
+- 6a: 0.16 and 0.02 ≤ 1.0, and 5.03 ≥ 3.84 and 3.94 ≥ 2.67.
+- 6b: 0.53 ≤ 1.51 and 0.58 ≤ 1.18.
+- 6c: 4.62 ≥ 3.52 and 3.78 ≥ 2.76.
+
+**Reading.** With the name and the person's own portrait in the question, the name-located edit is still active.
+Once the question cannot read the image, it suppresses the answer again (5.03 / 3.94 nats, 66–74% of the text-only
+forgetting). That restored suppression disappears when the LoRA is switched off at the name tokens alone, but not
+when it is switched off at as many other text tokens. The answer survives in the normal portrait input because the
+face route supplies the person, not because the edit stops acting.
+
+With links 1–5 (DEV-020, 021, 024, 027), the chain for the name-bound models is closed by intervention at each link:
+- the text-only edit on the name tokens causes the forgetting;
+- it stays active with the portrait;
+- the portrait route bypasses it and joins the shared representation at about layer 20;
+- suppression present after that point would also stop the portrait route.
+
+### DEV-028 — 2026-11-22 — unlearning placed after the convergence point
+
+### DEV-028 — 2026-11-22 — unlearning placed after the convergence point: LoRA only in layers 20–31 (decided by: user; design by: implementer)
+**Question.** DEV-027 places the convergence of the name and face routes at about layer 20. The text-only edits found
+so far sit before it: on the name tokens in L0–3, or as a switch that forms only on text-only input. DEV-024 part 2
+showed that suppression placed in the shared stream after L16 also suppresses the face route. Does text-only
+unlearning whose LoRA exists only after the convergence point also forget on the portrait route?
+
+**Run.**
+- G3 recipe: NPO + retain, lr 2e-4, retain weight 5, 200 people, `umu.n_retain_eval=100`, 4 epochs, seed 0.
+- The only change: LoRA only on the LM linear layers of decoder layers 20–31 (`lora.min_layer=20`;
+  `vlmu/models.py:lora_targets`). Run `umu_npo_rt_txt_lr2e-04_s0_gate_rw5n200_L20`.
+- Training data stays text-only.
+- Comparison: G3 seed 0 (all 32 layers), same recipe and seed.
+
+**Primary checkpoint.** Among checkpoints with unseen retain dc txt ≥ 0.85, retain dc img ≥ 0.85 and degen ≤ 0.20,
+the one with the lowest forget dc txt. The retain bar is lower than gate 1's 0.90: this is a pilot.
+
+**Predictions and thresholds:**
+- **Validity:** forget dc txt ≤ 0.70 at some checkpoint. Otherwise the run is not interpretable, and the fallback is
+  one rerun at lr 4e-4.
+- **Leak reduced:** forget dc img ≤ 0.70 at the primary checkpoint. G3 seed 0 kept 0.92–0.95 at every checkpoint.
+- **Leak unchanged:** forget dc img ≥ 0.90 there.
+- **Otherwise:** partial.
+- **Reported without a threshold:** G, txt+img, retain, the biography share per checkpoint (does a switch form?), and
+  every checkpoint.
+
+**Validity check in code:** the adapter must hold LoRA modules on layers 20–31 only (7 × 12 = 84 modules); the run
+aborts otherwise.
+
+**Known limits:** one seed; NPO's format loophole stays open, so a late-layer switch could form and spare the
+portrait route for that reason; fewer trainable layers may need a different lr.
+
+**Sizing:** about 25 minutes of training on one GPU (GPU 5), plus checkpoint evaluations.
+
+**Outcome, lr 2e-4** (2026-11-22; code as hashed in `logs/dev028/launch.txt`, uncommitted; LoRA on 84 modules, layers
+20–31; about 1.4 s per step).
+
+| step | 38 | 76 | 114 | 152 | 190 | 228 | 266 | 300 |
+|---|---|---|---|---|---|---|---|---|
+| forget dc txt | 0.955 | 0.894 | 0.879 | 0.818 | 0.818 | 0.818 | 0.788 | 0.818 |
+| forget dc img | 0.970 | 0.939 | 0.924 | 0.909 | 0.909 | 0.894 | 0.909 | 0.924 |
+| unseen retain txt / img | 0.967 / 1.000 | 0.943 / 0.975 | 0.951 / 0.943 | 0.943 / 0.934 | 0.943 / 0.959 | 0.934 / 0.959 | 0.926 / 0.967 | 0.926 / 0.967 |
+
+**Verdict: not interpretable.** The forgetting never reached 0.70 (minimum 0.788). With the LoRA confined to layers
+20–31, the same recipe forgets little. The portrait route stays at 0.89–0.92, so nothing can be said about the leak
+yet. The pre-set fallback, one rerun at lr 4e-4, follows (`..._L20` run tag kept, lr in the run id).
+
+**Editorial note** (2026-11-22): a stray duplicate of DEV-026's heading line, left here by an edit earlier today, was
+removed. DEV-026's text is unchanged.
+
+### DEV-026 — 2026-11-22 — can relative NPO forget deeply? One seed at lr 4e-4 (decided by: user; design by: implementer)
+DEV-023's relative NPO forgot too little (forget dc txt 0.742–0.773) for its comparison to count. The user asked to
+try one seed with stronger unlearning first, to see whether relative NPO can forget deeply at all.
+
+**Run.**
+- `unlearn.method=rnpo_rt train.lr=4.0e-4`; otherwise DEV-023 (retain weight 5, 200 people, n_retain_eval 100,
+  4 epochs).
+- Seed 1, the seed that formed the switch under NPO: `umu_rnpo_rt_txt_lr4e-04_s1_gate_rw5n200`.
+- Code unchanged since DEV-023.
+- Then the four analyses on step 300, as in DEV-023.
+
+**Questions** (exploratory; one seed):
+- (1) Depth: does forget dc txt reach ≤ 0.70, and how deep at best?
+- (2) If forget ≤ 0.70 is reached:
+  - biography share ≥ 0.20 at any checkpoint contradicts the loophole reading for this seed;
+  - ≤ 0.05 at every checkpoint (with sub_mean ≤ 0.3) is consistent with it.
+
+  One seed cannot decide the question, because NPO itself formed no switch in 2 of 3 seeds.
+- (3) Also reported: retain (txt, img), degen, forget dc img, criterion (d), and the share of wrong answers that
+  equal a training distractor.
+
+**Sizing:** about 25 minutes of training on one GPU, then about 10 minutes of analyses spread over idle GPUs.
+
+**Outcome** (2026-11-22; code as hashed in `logs/dev026/launch.txt`, uncommitted; all jobs exit 0).
+
+| step | 76 | 152 | 190 | 228 | 266 | 300 |
+|---|---|---|---|---|---|---|
+| forget dc txt | 0.818 | 0.606 | 0.409 | 0.591 | 0.545 | **0.500** |
+| forget dc img | 0.939 | 0.879 | 0.803 | 0.955 | 0.879 | 0.879 |
+| unseen retain txt / img | 0.910 / 0.975 | 0.869 / 0.902 | 0.762 / 0.852 | 0.959 / 0.975 | 0.934 / 0.951 | **0.910 / 0.926** |
+| biography share | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | **0.00** |
+
+At step 300:
+- sub_mean at L16 0.028.
+- LoRA off at the name / at the last token: 0.88 / 0.34 (33 lost facts).
+- FC-train(θu) 0.621 (base 0.530); FS 0.545, FS recovery 0.10.
+- First-token forgetting: text 4.02 nats, own portrait 0.53, portrait question 0.09.
+- Own portrait with the image blocked: top-1 θu 0.85 → 0.61 (θ0 0.92).
+- 13 of 33 wrong short answers equal one of the row's training distractors.
+
+**Answers:**
+- (1) Depth: yes. Forget dc txt ≤ 0.70 from step 152 on (minimum 0.409). Step 300 also meets gate 1's retain bar
+  (0.910 / 0.926).
+- (2) No switch formed at any checkpoint, and sub_mean ≈ 0. This is consistent with the loophole reading on the seed
+  that formed the switch under NPO (biography share 0.79, sub_mean 0.66). One seed only.
+- (3) The forgetting is name-bound and content-level: wrong short answers, knowledge near the prior under forced
+  choice. The portrait route still leaks (img 0.88; portrait question 0.09 nats).
+
+### DEV-024 — 2026-11-22 — where do the name route and the portrait route converge? Identity swap across routes (decided by: user, paper plan step A; design by: implementer)
+DEV-020 and DEV-021 show that the portrait reaches the person's facts without passing the text-only edit. This entry
+asks where, inside the vanilla, a person identified by name and the same person identified by face begin to share
+one representation, and on which side of that point the unlearning signal sits.
+
+**Prompts** (`scripts/mech_umu_convergence.py`; eval only). For a fact (person P, attribute) with the readout's
+unimodal question q:
+- name route N(P): `USER: {q}\nASSISTANT:`;
+- face route F(P): `USER: <image>\n{q with P's name replaced by "this person"}\nASSISTANT:`, with P's portrait.
+
+The two routes share the question's tokens after the referent ("'s occupation?\nASSISTANT:"). Facts are the
+doubly-correct forget and unseen-retain facts of `umu_npo_rt_txt_lr2e-04_s0_gate_rw5n200` (66 + 122). Each fact B is
+paired with the next fact A, in sorted order, of the same attribute with a different answer.
+
+**Part 1, map in θ0** (UMU's vanilla, no LoRA). The residual stream at the shared suffix positions of layer L is
+copied from a source run into a target run. The target's answer is then scored as a two-way forced choice between
+A's and B's answer texts (summed log p, teacher forced).
+
+| condition | source → target | reading |
+|---|---|---|
+| X1 | F(A) → N(B) | cross-route, the main measure |
+| X2 | N(A) → F(B) | cross-route, the main measure |
+| W1 | N(A) → N(B) | within-route reference |
+| W2 | F(A) → F(B) | within-route reference |
+| S1 | F(B) → N(B) | same person, control |
+| S2 | N(B) → F(B) | same person, control |
+
+- Layers: 0, 2, …, 30, 31.
+- Swap share at a layer: the share of pairs whose patched target prefers the source person's answer (S1/S2: the
+  share that keeps B's answer).
+- Only pairs whose unpatched targets prefer B's answer in both routes are scored.
+
+*Predictions and thresholds:*
+- **Convergence found:** some layer has a swap share ≥ 0.5 in both X1 and X2. L* is the shallowest such layer.
+- **No shared format in the question stream:** the maximum over layers of min(X1, X2) is ≤ 0.2, while W1 and W2
+  reach ≥ 0.8.
+- **Otherwise:** partial.
+- **Reported without a threshold:** the layer profiles; the gap between cross-route and within-route curves. Not a
+  threshold, an expectation: L* lies in layers 10–20, where DEV-015 found the last token taking over.
+
+*Validity checks:*
+- The script aborts if patching a target with its own states changes log p by more than 0.05 nats (first batch).
+- The map is not interpretable if S1 or S2 keep B's answer in fewer than 0.9 of pairs at any layer (the patch breaks
+  the model), or if W1 and W2 never reach 0.8 (the readout cannot see an identity move).
+
+**Part 2, the unlearned models, same person** (descriptive, no threshold). In θu, copy the name route's suffix states
+N(P) into the face route F(P) at layer L, and score the face route's correct answer.
+- Suppression share S(L) = (lp_F − lp_F,patched) / (lp_F − lp_N). It measures how far the face route moves to the
+  name route's forgetting once it receives the name route's states.
+- θ0 under the same copy is the control.
+- Models: G3 seeds 0 (name-bound edit) and 1 (switch), step 300. S(L) is read against L* from part 1.
+
+**Known limits:**
+- One model.
+- Two-way forced choice is a proxy for identity: a swap can also reflect the attribute's answer prior.
+- The face prompt's wording ("this person") is ours, not the benchmark's.
+- The portrait's 576 tokens come before the shared suffix, so the suffix positions differ between routes. The copy
+  aligns the suffixes from the end, as in DEV-014 and §6.
+
+**Sizing:** about 188 pairs × 17 layers × 6 conditions × 2 candidate answers, plus the source runs. Estimated 10–20
+minutes per part on one A6000 (not measured). Eval-only jobs are spread over idle GPUs (user, 2026-11-22).
+
+**Amendment, before the full run** (2026-11-22). A smoke test on 4 pairs (output deleted) showed that the code
+copied the whole common suffix of source and target. For W2 the two face prompts are identical as text, so the
+referent "this person" was copied too, and W2 swapped at every layer from layer 0. Every condition now copies only
+the tokens after the referent, as the design above states: at most the common suffix of N(B) and F(B)
+(`post_referent_len`). The thresholds are unchanged. Measured speed: about 14 s per 4 pairs for a face-route target,
+so about 11 minutes per face-target condition; each condition runs on its own GPU.
+
+### DEV-025 — 2026-11-22 — query-form sweep (§5) on G3 seeds 1 and 2 (decided by: user; design by: implementer)
+DEV-021 ran only four analyses on seeds 1 and 2. The user asked to run the remaining earlier experiments, the
+query-form sweep first. Seed 1 forgets by the response-style switch (like run 2) and seeds 0 and 2 by the name-bound
+edit (DEV-021), so the sweep compares the two mechanisms on the same inputs.
+
+**Test.**
+- `scripts/mech_umu_form_sweep.py --config configs/llava/umu_npo_rt.yaml --run-id
+  umu_npo_rt_txt_lr2e-04_s{1,2}_gate_rw5n200 --step 300 --set umu.n_retain_eval=100`.
+- Code unchanged; generation readout on (the default).
+- Seed 0's sweep is DEV-019's gate-3 run.
+
+**Status: exploratory, descriptive.** DEV-013's P1–P5 are applied unchanged and reported, as in DEV-020. No new
+threshold.
+
+**Expectation, from DEV-021's teacher-forced numbers** (not a threshold): the blank image escapes the forgetting more
+under the switch than under the name-bound edit. Blank-image forgetting was 1.11 nats in seed 1 vs 2.50–3.03 in seeds
+0 and 2. So R_blank and the generation recovery should be higher in seed 1 than in seed 2.
+
+**Known limits:** one seed per mechanism besides seed 0; the forms were designed on run 2.
+
+**Outcome** (2026-11-22; code as hashed in `logs/dev025/launch.txt`, uncommitted; both runs exit 0; figures
+`proposal/figures/form_sweep_G3s{1,2}_step300.png`).
+- Mechanisms: run 2 and seed 1 = switch; seeds 0 and 2 = name-bound edit (DEV-021).
+- Entries are R (forget facts) | generation keyword hit θ0 → θu.
+
+| form | run 2 (switch) | G3 seed 1 (switch) | G3 seed 0 (name-bound) | G3 seed 2 (name-bound) |
+|---|---|---|---|---|
+| base (training form) | 0.00 \| 0.77 → 0.37 | 0.00 \| 0.77 → 0.21 | 0.00 \| 0.77 → 0.14 | 0.00 \| 0.77 → 0.26 |
+| blank image | **0.88** \| 0.75 → **0.69** | **0.91** \| 0.76 → **0.62** | 0.51 \| 0.76 → 0.35 | 0.48 \| 0.76 → 0.39 |
+| 576 filler text tokens | 0.83 \| 0.71 → 0.48 | 0.81 \| 0.71 → 0.48 | 0.49 \| 0.71 → 0.30 | 0.54 \| 0.71 → 0.44 |
+| own portrait + name | 1.00 \| 0.98 → 0.97 | 0.99 \| 0.98 → 0.94 | 0.90 \| 0.98 → 0.82 | 0.97 \| 0.98 → 0.91 |
+| other portrait + name | 0.90 \| 0.40 → 0.40 | 0.95 \| 0.39 → 0.36 | 0.80 \| 0.39 → 0.29 | 0.77 \| 0.39 → 0.27 |
+| portrait question (no name) | 1.00 \| 0.98 → 0.98 | 1.00 \| 0.98 → 1.00 | 1.00 \| 0.98 → 0.97 | 1.00 \| 0.98 → 0.97 |
+| first / last / title / reversed name | 0.15 / 0.24 / 0.28 / −0.02 | 0.81 / 0.73 / 0.79 / 0.70 | 0.66 / 0.61 / 0.68 / 0.54 | 0.55 / 0.64 / 0.63 / 0.48 |
+| paraphrases 1 / 2 | −0.17 / −0.33 | 0.05 / 0.05 | 0.08 / 0.08 | 0.16 / 0.07 |
+| option list / A–D letters | 0.92 / 0.73 | 0.80 / 0.86 | 0.87 / 0.83 | 0.84 / 0.86 |
+| cloze / system prompt / no frame | 0.19 / 0.24 / 0.65 | 0.50 / 0.06 / 0.23 | 0.20 / 0.08 / 0.12 | 0.25 / 0.20 / 0.05 |
+
+DEV-013's P1–P5 (pass/fail):
+
+| | P1 | P2 | P3 | P4 (Spearman) | P5 (Spearman) |
+|---|---|---|---|---|---|
+| seed 1 | pass | fail | pass | fail (0.60) | pass (0.71) |
+| seed 2 | fail | fail | pass | fail (0.24) | fail (0.57) |
+| seed 0 (DEV-020) | fail | fail | pass | fail (0.16) | fail (0.40) |
+| run 2 | pass | fail | pass | pass (0.98) | pass (0.77) |
+
+**Reading (exploratory, with the expectation fixed above):**
+- **The blank-image escape depends on the mechanism; the portrait escape does not.**
+  - Under the switch (run 2, seed 1), a blank image or 576 filler tokens before the question undo most of the
+    forgetting: R 0.81–0.91, generation 0.62–0.69 against θ0's 0.75–0.76.
+  - Under the name-bound edit (seeds 0 and 2) they undo about half: R 0.48–0.54, generation 0.35–0.44. The
+    expectation holds.
+  - The person's own portrait escapes in every model: R 0.90–1.00, generation 0.82–0.97. The portrait question
+    without the name is never forgotten (R 1.00).
+- **Name spelling.** On G3, other spellings of the name partly escape (R 0.48–0.81, seed 1 highest), while run 2's
+  forgetting carried over to them (R ≤ 0.28). Changing the name escapes more on all three G3 seeds than on run 2,
+  in both mechanisms.
+- **Paraphrases** stay forgotten in all three G3 seeds (R ≤ 0.16).
+- **Option lists** contain the answer, so R is high in every model (DEV-013 caveat 1).
+- **Collateral tracks form only in run 2.** P4 (retain and forget recovery move together across forms) passes only
+  in run 2, the checkpoint whose switch still covered the retain people.
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |

@@ -111,9 +111,63 @@ def step_npo_rt(ctx, step):
     return {**step_npo(ctx, step), **step_retain(ctx, step)}
 
 
-STEP_FNS = {"nll": step_nll, "ga": step_ga, "ga_diff": step_ga_diff, "npo": step_npo, "npo_rt": step_npo_rt}
-RETAIN_METHODS = ("ga_diff", "npo_rt")   # need a retain BatchPlan
-NPO_METHODS = ("npo", "npo_rt")          # need a reference log-prob cache
+def candidate_scores(ctx, rows):
+    """[B, C] summed answer log p of each row's candidates: column 0 = its own answer, then row['distractors'] (other
+    people's answers to the same question); rows with fewer distractors are padded with -inf."""
+    flat = [{**r, "answer": a} for r in rows for a in [r["answer"]] + list(r["distractors"])]
+    _, lp, _ = ctx.adapter.answer_logprobs(ctx.model, encode(ctx, flat))
+    width = 1 + max(len(r["distractors"]) for r in rows)
+    out, k = [], 0
+    for r in rows:
+        n = 1 + len(r["distractors"])
+        out.append(torch.cat([lp[k:k + n], lp.new_full((width - n,), float("-inf"))]))
+        k += n
+    return torch.stack(out)
+
+
+def relative_logp(scores):
+    """log of the own answer's share of the candidates' probability mass. Adding the same amount to every candidate's
+    log p (a change of answer format that lowers all short answers alike) leaves it unchanged."""
+    return scores[:, 0] - torch.logsumexp(scores, dim=1)
+
+
+def step_rnpo(ctx, step):
+    """Relative NPO (DEVIATIONS DEV-023): NPO on relative_logp instead of the answer's log p. The forget objective can
+    then only be met by moving probability from the true answer to other people's answers in the same format, not by
+    giving up the answer format. Reference = the vanilla's relative_logp, cached per sample."""
+    rows = ctx.plan.batch(step)
+    missing = [r for r in rows if r["uid"] not in ctx.ref_cache]
+    if missing:
+        with torch.no_grad(), ctx.model.disable_adapter():
+            ref_new = relative_logp(candidate_scores(ctx, missing))
+        for r, v in zip(missing, ref_new.tolist()):
+            ctx.ref_cache[r["uid"]] = v
+    ref = torch.tensor([ctx.ref_cache[r["uid"]] for r in rows], device=ctx.adapter.device)
+    scores = candidate_scores(ctx, rows)
+    rho = relative_logp(scores)
+    if step == 0:   # validity checks (DEV-023): format invariance, and theta = theta_0 before the first update
+        shift = relative_logp(scores.detach() + 7.0) - rho.detach()
+        if shift.abs().max().item() > 1e-3:
+            raise RuntimeError(f"relative_logp is not invariant to a shared shift: {shift.abs().max().item():.2e}")
+        gap = (rho.detach() - ref).abs().max().item()
+        if gap > 0.05:
+            raise RuntimeError(f"step 0: relative log p differs from the reference by {gap:.3f} nats (LoRA not neutral)")
+    beta = ctx.cfg["unlearn"]["npo_beta"]
+    loss = -(2.0 / beta) * F.logsigmoid(-beta * (rho - ref)).mean()
+    loss.backward()
+    return {"rnpo_loss": loss.item(), "rel_ratio": (rho - ref).mean().item(), "rel_logp": rho.mean().item()}
+
+
+def step_rnpo_rt(ctx, step):
+    """Relative NPO on the forget batch + retain NLL."""
+    return {**step_rnpo(ctx, step), **step_retain(ctx, step)}
+
+
+STEP_FNS = {"nll": step_nll, "ga": step_ga, "ga_diff": step_ga_diff, "npo": step_npo, "npo_rt": step_npo_rt,
+            "rnpo_rt": step_rnpo_rt}
+RETAIN_METHODS = ("ga_diff", "npo_rt", "rnpo_rt")   # need a retain BatchPlan
+NPO_METHODS = ("npo", "npo_rt", "rnpo_rt")          # need a reference cache
+RNPO_METHODS = ("rnpo_rt",)                         # forget rows need distractors (vlmu/umu.py:add_distractors)
 
 
 class Ctx:

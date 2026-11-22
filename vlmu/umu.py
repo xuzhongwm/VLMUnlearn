@@ -122,6 +122,26 @@ def unlearn_rows(df, form="txt"):
     return rows
 
 
+def add_distractors(rows, k=3, pool=None):
+    """Relative NPO (DEV-023): each row gets up to k answers that OTHER people in `pool` (default: `rows`) give to the
+    same question type (field), distinct from its own answer and from each other, in the same answer format.
+    Deterministic per row."""
+    import random
+    by_field = collections.defaultdict(list)
+    for r in (pool if pool is not None else rows):
+        by_field[r["field"]].append(r)
+    out = []
+    for r in rows:
+        own = r["answer"].strip()
+        pool = sorted({x["answer"] for x in by_field[r["field"]] if x["profile"] != r["profile"] and x["answer"].strip() != own})
+        random.Random(r["uid"]).shuffle(pool)
+        out.append({**r, "distractors": pool[:k]})
+    missing = [r["uid"] for r in out if not r["distractors"]]
+    assert not missing, f"rows without a distractor: {missing[:5]}"
+    assert all(r["answer"].strip() not in {d.strip() for d in r["distractors"]} for r in out), "a distractor equals the answer"
+    return out
+
+
 # ---------------------------------------------------------------------------------------- UMU protocol
 def protocol_items(dfs, sets=("forget", "retain"), forms=None):
     """Classify items as UMU's eval.py builds them: one img (multimodal) + one txt (unimodal) row per fact.

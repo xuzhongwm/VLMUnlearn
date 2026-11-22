@@ -64,11 +64,19 @@ class Adapter:
         self._logits_kw = next((k for k in ("logits_to_keep", "num_logits_to_keep") if k in sig), None)
         return model
 
-    def lora_targets(self, model) -> list:
-        """All linear layers of the language model (vision tower + projector stay frozen)."""
-        pat = re.compile(r"\.layers\.\d+\.(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)$")
-        names = [n for n, m in model.named_modules()
-                 if isinstance(m, torch.nn.Linear) and pat.search(n) and not re.search(r"visual|vision", n)]
+    def lora_targets(self, model, min_layer=None, max_layer=None) -> list:
+        """All linear layers of the language model (vision tower + projector stay frozen); optionally only decoder
+        layers min_layer..max_layer (DEV-028: unlearning placed after the convergence point)."""
+        pat = re.compile(r"\.layers\.(\d+)\.(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)$")
+        names = []
+        for n, m in model.named_modules():
+            hit = pat.search(n)
+            if not (isinstance(m, torch.nn.Linear) and hit) or re.search(r"visual|vision", n):
+                continue
+            layer = int(hit.group(1))
+            if (min_layer is not None and layer < min_layer) or (max_layer is not None and layer > max_layer):
+                continue
+            names.append(n)
         assert names, "no LoRA target modules found"
         return names
 
@@ -78,8 +86,14 @@ class Adapter:
         if lcfg.get("gradient_checkpointing", True):
             model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
             model.enable_input_require_grads()
+        lo, hi = lcfg.get("min_layer"), lcfg.get("max_layer")
+        targets = self.lora_targets(model, lo, hi)
+        if lo is not None or hi is not None:
+            layers = sorted({int(re.search(r"\.layers\.(\d+)\.", n).group(1)) for n in targets})
+            assert len(targets) == 7 * len(layers), f"expected 7 LoRA modules per layer, got {len(targets)} on {layers}"
+            print(f"LoRA restricted to decoder layers {layers[0]}..{layers[-1]}: {len(targets)} modules")
         conf = LoraConfig(r=lcfg["r"], lora_alpha=lcfg["alpha"], lora_dropout=lcfg["dropout"],
-                          target_modules=self.lora_targets(model), bias="none")
+                          target_modules=targets, bias="none")
         return get_peft_model(model, conf)
 
     # ---- encoding -------------------------------------------------------------------

@@ -94,6 +94,7 @@ def score(adapter, model, items, image_root, ecfg, out_path, log=print):
     model.eval()
     t0 = time.time()
     by_mod = collections.defaultdict(list)
+    
     for r in todo:
         by_mod["txt" if r["image"] is None else "img"].append(r)
     letter_ids = adapter.letter_ids

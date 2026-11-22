@@ -24,13 +24,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from vlmu.config import base_parser, resolve  # noqa: E402
 from vlmu.models import get_adapter  # noqa: E402
 from vlmu.runs import free, model_dir, results_dir  # noqa: E402
-from vlmu.train import NPO_METHODS, RETAIN_METHODS, BatchPlan, Ctx, clear_resume, save_adapter, train  # noqa: E402
-from vlmu.umu import degeneracy, fact_table, generate_protocol, load_umu, protocol_items, protocol_summary, \
-    umu_run_id, unlearn_rows  # noqa: E402
+from vlmu.train import NPO_METHODS, RETAIN_METHODS, RNPO_METHODS, BatchPlan, Ctx, clear_resume, save_adapter, \
+    train  # noqa: E402
+from vlmu.umu import add_distractors, degeneracy, fact_table, generate_protocol, load_umu, protocol_items, \
+    protocol_summary, umu_run_id, unlearn_rows  # noqa: E402
 from vlmu.utils import Logger, append_jsonl, atomic_write_json, is_done, mark_done, read_json, read_jsonl, \
     seed_all, tracked_run  # noqa: E402
 
-METHODS = ("npo", "ga", "npo_rt", "ga_diff")
+METHODS = ("npo", "ga", "npo_rt", "ga_diff", "rnpo_rt")   # rnpo_rt: relative NPO + retain (DEV-023)
 
 
 def fmt(x, spec="+.3f"):
@@ -85,10 +86,15 @@ def main():
         n_eval, n_ru = ucfg["n_retain_eval"], ucfg.get("n_retain_unlearn", 0) if u["method"] in RETAIN_METHODS else 0
         dfs = load_umu(cfg["paths"]["root"], n_eval + n_ru, 0, log, ucfg["forget_split"])
         retain_unlearn_df, dfs["retain"] = dfs["retain"].iloc[n_eval:], dfs["retain"].iloc[:n_eval]
+        full_forget = dfs["forget"]          # distractor pool for relative NPO (all forget people, also in --debug)
         if cfg["debug"]:
             dfs = {k: v.head(2) for k, v in dfs.items()}
             retain_unlearn_df = retain_unlearn_df.head(2)
         forget = unlearn_rows(dfs["forget"], u["modality"])
+        if u["method"] in RNPO_METHODS:
+            forget = add_distractors(forget, u.get("n_distractors", 3), pool=unlearn_rows(full_forget, u["modality"]))
+            log(f"relative NPO: {sum(len(r['distractors']) for r in forget) / len(forget):.2f} distractors per forget row "
+                f"(other people's answers to the same question); e.g. {forget[5]['answer']!r} vs {forget[5]['distractors']}")
         retain = unlearn_rows(retain_unlearn_df, u["modality"]) if n_ru else []
         if cfg["debug"]:
             forget, retain = forget[:cfg.get("debug_rows", 16)], retain[:cfg.get("debug_rows", 16)]
