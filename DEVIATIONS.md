@@ -878,6 +878,59 @@ checkpoint. Everything else is descriptive and compared with run 2's recorded va
 **Known limits:** one checkpoint per regime; every layer and band choice was made on run 2; G3 passes gate 1 by one
 fact.
 
+**Outcome, G3 step 300** (2026-11-22, code at 3dab49b; all 9 scripts exit 0; outputs in `.../mech_umu/<G3 run>/step300/`;
+figures `proposal/figures/<name>_G3_step300.png`, next to the run 2 ones).
+
+Validity checks met:
+- Self-transplant 0.00 nats.
+- Zero-vector steering 16/16 identical.
+- Cross-modal mask check 0.00 nats.
+
+Forget facts: 66 dc facts (run 2: 65).
+
+| experiment | run 2 step 150 | G3 step 300 |
+|---|---|---|
+| §4b logit lens, name route (txt) | suppressed from layer 5; retain facts suppressed as much | suppressed only from layer 15 (min −1.6 at L24); retain flat |
+| §4b portrait route (img) | flat | flat |
+| §4c LoRA off, layers 0–9 / 10–19 / 20–31 (recovery; generation) | 0.96 / 0.92 / 0.08 | 0.96 (86%) / 0.44 (32%) / 0.22 (11%); 4-layer windows: 0–3 0.75, 4–7 0.42, ≥ 8 ≤ 0.25 |
+| §4c LoRA only in 0–9 / 10–19 / 20–31 (recovery) | no band sufficient | 0.53 / 0.98 / 0.99: layers 0–9 alone give about half the forgetting |
+| §4d ‖ΔW x‖, largest group | name and last tokens, L8–18; forget = retain names | name tokens, L0–9 (2.9% relative); forget names 3.9 vs retain names 3.5; image tokens 0.5–0.7% |
+| §4e LoRA off at name / last / other tokens (recovery, lost facts) | 0.37 / 0.88 / 0.97 | **0.98** / 0.27 / 0.33 |
+| §4e LoRA only at name (recovery) | ≈ 0 forgetting | 0.50 (half the forgetting) |
+| §6 route patching at the last token, text → blank, share of the total at L16 / L20 | 0.98 / 0.96 | 0.67 / 0.88 (12 facts, 10 of them Medical_Conditions) |
+| §7 generation hit θ0 → θu: base / blank before / text prefix 576 | 0.77 → 0.37 / 0.75 → 0.69 / see DEV-015 | 0.77 → 0.14 / 0.76 → 0.35 / 0.71 → 0.30 |
+| §7 R blank before / text prefixes 16–576 | 0.88 / — | 0.51 / 0.42–0.50 |
+| §8 transplant M(text←blank) / M(blank←text), layers 0–19 | 0.41 / 0.06, mixed | 0.32 / 0.36, mixed; control 0.02 / 0.02 |
+| §11 switch on / switch off (DEV-017 thresholds) | PASS / PASS | **FAIL** (0.02 long) / partial (0.83 short, but θu 0.82 and random 0.82: no effect) |
+| §12 forgetting in nats: text / blank / own portrait / portrait question | not run | 7.66 / 3.03 / 0.16 / 0.01 |
+| §12 blank, attention to the image blocked in all layers (DEV-018) | not run | signal 0.64 → 0.83; top-1 θu 0.59 → 0.50 (half-way 0.48); θ0 0.92 → **partial** |
+| §12 own portrait, attention blocked in all layers | not run | forgetting 0.16 → 5.03 nats, top-1 0.94 → 0.50 (equal to blank under the block) |
+
+Reading the table:
+- In §4c, "LoRA only in a band" reports recovery: 1 means that band alone produces no forgetting.
+- In §6, run 2's shares come from DEV-015: −15.40 and −15.10 of −15.75.
+- In §8, run 2's values are DEV-014's.
+
+**Reading (exploratory, formed after seeing these data):**
+- **On G3 the forgetting is written on the name tokens in the first layers.**
+  - Switching the LoRA off at the name tokens alone restores 0.98 of the lost facts (top-1 0.43 → 1.00).
+  - The name tokens alone produce half the forgetting.
+  - Layers 0–3 carry most of it (LoRA off there restores 0.75).
+  - The last prompt token takes over only after layer 16 (§6, state patching).
+- **None of run 2's response-style mechanism appears on G3.** There is no shared direction, no switch (§11), and the
+  retain facts are not suppressed (§4b).
+- **The cross-modal leak has a direct account on G3.** The portrait question contains no name, so the name-bound edit
+  is never triggered (0.01 nats).
+  - With the name and the person's own portrait, the answer survives (0.16 nats) because the model reads the face.
+  - When the question tokens cannot attend to the image, the own-portrait input forgets exactly as much as the blank
+    input under the same block (5.03 nats).
+  - A blank image helps only partly (3.03 nats, generation 0.35).
+- **The two leaks differ.**
+  - Run 2: any image context breaks a form-bound switch.
+  - G3: the portrait supplies a route to the person that bypasses the name.
+- **Limits:** one checkpoint per regime, one seed; G3 passes gate 1 by one fact; §6 uses 12 facts chosen on their
+  outcome and dominated by one attribute; all layer and band choices were made on run 2.
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |
