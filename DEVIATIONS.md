@@ -931,6 +931,49 @@ Reading the table:
 - **Limits:** one checkpoint per regime, one seed; G3 passes gate 1 by one fact; §6 uses 12 facts chosen on their
   outcome and dominated by one attribute; all layer and band choices were made on run 2.
 
+### DEV-021 — 2026-11-22 — does G3 replicate across seeds? (decided by: user; design by: implementer)
+G3 step 300 passed gate 1 by one fact, and DEV-020's name-token account of its forgetting rests on that single run.
+This entry reruns the G3 recipe with two new seeds.
+
+**Test, fixed before running.**
+- Recipe: `scripts/unlearn_umu.py --config configs/llava/umu_npo_rt.yaml --set train.lr=2.0e-4
+  unlearn.retain_weight=5 umu.n_retain_unlearn=200 umu.n_retain_eval=100 train.max_epochs=4 run_tag=gate_rw5n200
+  unlearn.seed=<1|2>`.
+- Seeds: 1 and 2 (G3 is seed 0). The seed sets the LoRA initialisation and the batch order; the readout facts are
+  the same.
+- On step 300 of each seed (the step selected for G3), whether or not it passes gate 1, the analyses run with
+  unchanged code and `--set umu.n_retain_eval=100`:
+  - `mech_umu_style_control.py`
+  - `mech_umu_position_mask.py`
+  - `mech_umu_signal_transfer.py`
+  - `mech_umu_crossmodal.py`
+
+**Questions and thresholds** (forget dc facts; one verdict per seed):
+- **R1, training outcome.** Does step 300 meet DEV-019's gate-1 criteria (unseen retain dc txt and img ≥ 0.90, degen
+  ≤ 0.20, forget dc txt ≤ 0.70)? Every checkpoint is reported against the same criteria.
+- **R2, mechanism, step 300.** The mechanism replicates if all four hold:
+  - (a) Name localisation (position masking, lost facts, first-token recovery): LoRA off at the name tokens ≥ 0.7, and
+    LoRA off at the last token ≤ 0.5. G3: 0.98 / 0.27; run 2: 0.37 / 0.88.
+  - (b) No shared direction: signal-transfer sub_mean at layer 16 ≤ 0.3. G3: 0.13; run 2: 0.91.
+  - (c) Knowledge not recovered by forced choice: FC-train(θu) ≤ 0.65. G3: 0.485; run 2: 0.908.
+  - (d) The face rescues the answer. On the name question with the person's own portrait:
+    - forgetting ≤ 1.0 nat;
+    - with attention to the image blocked in all layers, θu's top-1 falls at least half-way from its unblocked value
+      to its value on the text form;
+    - θ0's top-1 under the block stays ≥ 0.6.
+
+    G3: 0.16 nats; 0.94 → 0.50 (half-way 0.66); θ0 1.00 → 0.92.
+- **Verdict.** If (a)–(d) all hold on both seeds, DEV-020's account replicates. If they all fail on a seed, that seed
+  forgets like run 2 or in a third way. Anything else is mixed.
+
+**Validity checks:** the scripts' own (self-patch, mask check, gate-2 validity conditions).
+
+**Sizing:** about 15 minutes of training plus about 15 minutes of analyses per seed, both seeds in parallel on two
+GPUs.
+
+**Known limits:** the step is fixed at 300 from G3; the thresholds sit between G3's and run 2's values and were set
+after seeing both.
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |
