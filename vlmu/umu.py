@@ -143,10 +143,12 @@ def add_distractors(rows, k=3, pool=None):
 
 
 # ---------------------------------------------------------------------------------------- UMU protocol
-def protocol_items(dfs, sets=("forget", "retain"), forms=None):
+def protocol_items(dfs, sets=("forget", "retain"), forms=None, prompt_fn=None):
     """Classify items as UMU's eval.py builds them: one img (multimodal) + one txt (unimodal) row per fact.
     forms {set: tuple} may add 'txt+img' (the unimodal, name-based question WITH the portrait; not in UMU):
-    it separates 'the name triggers the forgetting' from 'a missing image triggers it'."""
+    it separates 'the name triggers the forgetting' from 'a missing image triggers it'.
+    prompt_fn(text, has_image) builds the prompt for non-LLaVA models (adapter.prompt, DEV-030); None keeps UMU's
+    LLaVA strings exactly."""
     forms = forms or {}
     rows = []
     for set_name in sets:
@@ -165,11 +167,17 @@ def protocol_items(dfs, sets=("forget", "retain"), forms=None):
                 base = {"set": set_name, "profile": row["ID"], "field": key, "pair_id": f"umu/{row['ID']}/{key}",
                         "name": profile_name(row), "temp": temp, "correct_text": opts[uni[key]["answer"].split(".")[0]]}
                 img = image_bytes(row["image"])
-                variants = {
-                    "img": (img, f"USER: <image>\n{mul[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"),
-                    "txt": (None, f"USER:\n{uni[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"),
-                    "txt+img": (img, f"USER: <image>\n{uni[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"),
-                }
+                if prompt_fn is None:
+                    variants = {
+                        "img": (img, f"USER: <image>\n{mul[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"),
+                        "txt": (None, f"USER:\n{uni[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"),
+                        "txt+img": (img, f"USER: <image>\n{uni[key]['question']}\nSelect answer in {str(temp)}\nASSISTANT:"),
+                    }
+                else:
+                    q = lambda s: f"{s}\nSelect answer in {str(temp)}"  # noqa: E731
+                    variants = {"img": (img, prompt_fn(q(mul[key]["question"]), True)),
+                                "txt": (None, prompt_fn(q(uni[key]["question"]), False)),
+                                "txt+img": (img, prompt_fn(q(uni[key]["question"]), True))}
                 for m in want:
                     ib, prompt = variants[m]
                     rows.append({**base, "uid": f"umuproto/{set_name}/{row['ID']}/{key}/{m}", "modality": m,

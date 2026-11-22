@@ -106,12 +106,12 @@ def main():
         n_seen = min(ucfg.get("n_retain_seen_eval", 20), len(retain_unlearn_df)) if retain else 0
         if n_seen:
             dfs["retain_seen"] = retain_unlearn_df.head(n_seen)
-        eval_rows = protocol_items(dfs, sets=("forget", "retain", "retain_seen"),
-                                   forms={k: tuple(v) for k, v in cfg["eval"].get("forms", {}).items()})
-
         # UMU vanilla as the base; processor of the public base (its processor_config lacks
         # num_additional_image_tokens; the tokenizer is the same)
         adapter = get_adapter({**cfg["model"], "id": ucfg["ckpt"], "processor_id": cfg["model"]["id"]})
+        eval_rows = protocol_items(dfs, sets=("forget", "retain", "retain_seen"),
+                                   forms={k: tuple(v) for k, v in cfg["eval"].get("forms", {}).items()},
+                                   prompt_fn=None if cfg["model"]["family"] == "llava" else adapter.prompt)
         model = adapter.add_lora(adapter.load_model(), cfg["lora"], u["seed"])
         plan = BatchPlan(forget, tcfg["batch_size"], u["seed"])
         rplan = BatchPlan(retain, tcfg["batch_size"], u["seed"] + 7919) if retain else None

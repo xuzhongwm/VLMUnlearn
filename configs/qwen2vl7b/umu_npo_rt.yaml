@@ -1,0 +1,16 @@
+# DEV-030: text-only NPO + retain on the Qwen2-VL-7B UMU vanilla, as the LLaVA G3 recipe (DEV-019).
+# umu.ckpt: the merged vanilla, --set umu.ckpt=$VLMU_ROOT/models/qwen2vl7b_umu_vanilla
+base: [../models/qwen2vl7b.yaml]
+umu:
+  forget_split: forget_10
+  n_retain_eval: 100
+  n_retain_unlearn: 200
+unlearn: {method: npo_rt, modality: txt, seed: 0, npo_beta: 0.4, retain_weight: 5}
+train: {lr: 2.0e-4, batch_size: 8, max_epochs: 4, eval_every_epochs: 0.5, warmup_ratio: 0.0, log_every: 10}
+eval:
+  gen_batch: {img: 16, txt: 32}
+  forms: {forget: [img, txt, txt+img], retain: [img, txt]}
+debug_rows: 16
+debug_overrides:
+  umu: {n_retain_eval: 2}
+  train: {max_steps: 4, eval_every_steps: 2, log_every: 1}

@@ -186,20 +186,23 @@ colab/run.ipynb            UMU-track run book: §1 setup, §2 vanilla check, §3
 proposal/overview.tex      project overview and results to date (LaTeX); proposal.tex = the 2026-11-05 proposal
 proposal/figures/          report figures (<experiment>_run2_step150.png)
 configs/llava/umu_npo.yaml, umu_npo_rt.yaml, vanilla.yaml   UMU-track configs (run 2 = umu_npo_rt + train.lr=5e-5)
-vlmu/umu.py                UMU data loading, unlearning rows, UMU-protocol readout
+configs/qwen2vl7b/         second model family (DEV-030): umu_vanilla.yaml, umu_npo_rt.yaml
+vlmu/umu.py                UMU data loading, unlearning rows, UMU-protocol readout (prompt_fn for non-LLaVA)
 vlmu/mech/                 hooks (LoRA contribution masking / replacement, state patching), Milestone J checks, tools
-vlmu/models.py, train.py, config.py, utils.py   model adapters, NPO/GA training loop, config + paths, I/O helpers
+vlmu/models.py, train.py, config.py, utils.py   model adapters, NPO/GA/relative-NPO training loop, config + paths, I/O helpers
 scripts/unlearn_umu.py     UMU unlearning runs (resumable; LoRA saved per checkpoint)
-scripts/mech_umu_*.py      one script per mechanism experiment (notebook §4–§12)
+scripts/finetune_umu_vanilla.py   UMU vanilla for a model UMU did not release (Qwen2-VL-7B, DEV-030)
+scripts/mech_umu_*.py      one script per mechanism experiment (notebook §4–§13); core3 = the model-agnostic core tests
 scripts/check_hooks_umu.py, eval_external.py            Milestone J on a UMU checkpoint; vanilla readout
+analysis/                  analyses over saved outputs only (regime_map.py, eight_runs.py)
 ```
 
-**Outdated, do not take as current:**
-- `README.md` and `STATUS_README.md` describe the earlier MLLMU-Bench track (2026-10-29 to 11-05).
-- `colab/archive_mllmu_track.ipynb`, `configs/{llava,qwen2vl,qwen25vl}/runs|grid|pilot*`, and
-  `vlmu/runs.py` / `report.py` / `data/` belong to that track.
-- `research.md` (Chinese notes) is superseded by `DEVIATIONS.md` and `proposal/overview.tex` from DEV-013 on.
-- `PROTOCOL.md` is referenced but was never added.
+**Cleaned up 2026-11-22.** The earlier MLLMU-Bench track was removed from the working tree: its scripts, configs,
+`vlmu/data/` builders, test, `STATUS_README.md`, `research.md` and the archive notebook. It remains in git history.
+`README.md` was rewritten for the current track.
+- `vlmu/runs.py` and `vlmu/report.py` still contain MLLMU-track code. They stay because the current scripts import
+  helpers from them (`model_dir`, `results_dir`, `free`).
+- `PROTOCOL.md` is referenced in old entries but was never added.
 
 ## 6. Loose ends
 

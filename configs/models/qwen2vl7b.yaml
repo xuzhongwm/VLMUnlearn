@@ -1,0 +1,9 @@
+# Second model family for the UMU track (DEV-030).
+model:
+  role: primary
+  name: qwen2vl7b
+  family: qwen2vl
+  id: Qwen/Qwen2-VL-7B-Instruct
+  min_pixels: 200704         # 448*448: every UMU portrait (1024x1024) -> 448x448 -> 256 visual tokens
+  max_pixels: 200704
+lora: {r: 16, alpha: 16, dropout: 0.05, gradient_checkpointing: true}   # LM linear layers only, as the LLaVA runs

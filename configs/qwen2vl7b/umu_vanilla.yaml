@@ -1,0 +1,7 @@
+# DEV-030: UMU vanilla for Qwen2-VL-7B (UMU released LLaVA only). scripts/finetune_umu_vanilla.py
+base: [../models/qwen2vl7b.yaml]
+umu: {forget_split: forget_10, n_retain_eval: 100}
+train: {lr: 2.0e-4, epochs: 3, batch_size: 8, warmup_ratio: 0.03, seed: 0, log_every: 50}
+eval: {gen_batch: {img: 16, txt: 32}}
+debug_overrides:
+  train: {max_steps: 4, epochs: 1, log_every: 1}

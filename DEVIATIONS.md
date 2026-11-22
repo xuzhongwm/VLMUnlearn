@@ -1320,6 +1320,63 @@ at L20 and 0.97 at L24; image-token swap 0.53 at L18 and 0.09 at L20.
     switch);
   - the face route reaches the shared representation at L16–20 without passing them.
 
+### DEV-030 — 2026-11-22 — second model family: Qwen2-VL-7B-Instruct on UMU (decided by: user; design by: implementer)
+The paper needs the core findings on a second model family. The user chose to start now. Qwen2-VL-7B-Instruct is
+used: the repo has its adapter, and Nikankin et al. and Cohen et al. study it.
+
+**Stage 1 — UMU vanilla** (`scripts/finetune_umu_vanilla.py`, `configs/qwen2vl7b/umu_vanilla.yaml`). UMU released
+only a LLaVA vanilla.
+- UMU's own script (finetune/finetune.py): LoRA r8/α16, lr 2e-5, 5 epochs, MM_QA with the portrait. Its UM_QA loop is
+  commented out.
+- Here, so that the model knows every person by name and by face:
+  - data: all 500 profiles, both UM_QA (name, no image) and MM_QA (portrait + "this person");
+  - LoRA r16/α16 on the LM linear layers;
+  - lr 2e-4, 3 epochs, batch 8; answer tokens only in the loss;
+  - portraits at 448×448 (256 visual tokens);
+  - the model's own chat template, also for the readout.
+- Readout after each epoch: UMU protocol, forget (50) and first 100 retain profiles.
+- Selection: the epoch with the highest min(forget all txt, forget all img). **Accepted if both ≥ 0.70**; otherwise
+  stop and report. The selected adapter is merged and becomes `umu.ckpt`.
+
+**Stage 2 — unlearning** (`configs/qwen2vl7b/umu_npo_rt.yaml`).
+- The LLaVA G3 recipe: NPO + retain, lr 2e-4, retain weight 5, 200 retain-unlearn people, n_retain_eval 100,
+  4 epochs, checkpoints every 0.5 epoch; seeds 0, 1, 2.
+- A checkpoint qualifies under DEV-019's gate 1: unseen retain dc txt and img ≥ 0.90, degen ≤ 0.20, forget dc txt
+  ≤ 0.70. The selected one per seed is the qualifying checkpoint with the lowest forget dc txt.
+- If no checkpoint of seed 0 qualifies, lr 1e-4 and 4e-4 are tried on seed 0 before the other seeds.
+
+**Stage 3 — the three core tests** on each selected checkpoint (forget dc facts; first answer token; θ0 = the Qwen
+vanilla).
+- (Q1) Leak: forget dc img ≥ 0.85 and forget dc txt+img ≥ 0.85 (the portrait route leaks). Blank image: reported.
+- (Q2) Knockout: with the portrait shown and the name in the question, blocking attention from the positions after
+  the image to the image tokens restores forgetting. Criteria: F(knockout) ≥ 0.5 × F(text), with θ0's top-1 under
+  the knockout ≥ 0.6.
+- (Q3) Name localisation: LoRA off at the name tokens on the text form, F ≤ 0.3 × F(text). Control: LoRA off at as
+  many other text tokens, F ≥ 0.7 × F(text). Also DEV-029's 6b under knockout, reported.
+- Tests: an adapter-agnostic version of `mech_umu_link6.py`, validated on LLaVA G3 seed 0 against DEV-029's numbers
+  before use on Qwen.
+
+**Validity checks:** the hook checks of DEV-029 (keep = 1 reproduces θu; an empty block reproduces the unhooked
+run), run on Qwen before stage 3.
+
+**Known limits:**
+- Our vanilla recipe differs from UMU's (both forms; lr; rank).
+- Readouts use Qwen's chat template, so absolute accuracies are not comparable with LLaVA's.
+- Convergence, state transfer and the two-mechanism analysis are not part of this entry.
+
+**Setup notes, before any Qwen result** (2026-11-22):
+- `scripts/mech_umu_core3.py` reproduces DEV-029 exactly on LLaVA G3 seed 0: F 7.67 / 0.98 / 0.16 / 5.03 / 0.53 /
+  4.62 nats, and blank image 3.03 as DEV-020. On LLaVA, Q2 and Q3 pass.
+- **Qwen runs use `--set model.attn=eager`.** On a Qwen debug run (4 steps; base as a stand-in vanilla), the
+  empty-block check failed under sdpa: 0.051 nats against a 0.05 tolerance. Without padding, sdpa takes its
+  is_causal kernel, and the explicit mask switches kernels. Under eager both checks are 0.00.
+- The unlearning pipeline (`unlearn_umu.py`) and the protocol readout run on Qwen in debug mode.
+- The vanilla fine-tune runs at about 1.44 s per step (4500 steps).
+- Order of stage 2, fixed now: seeds 0 and 1 (lr 2e-4) start together on GPUs 4 and 5 as soon as the vanilla is
+  accepted. If seed 0 has no qualifying checkpoint, seed 0 is rerun at lr 1e-4, then at 4e-4. Seed 2 starts with
+  the first lr at which seed 0 qualifies. Each selected checkpoint goes to stage 3 automatically.
+- Automation: a scratchpad orchestrator; its status log is `logs/dev030/orchestrate.txt`.
+
 ### DEV-029 — 2026-11-22 — closing the causal chain: is the name-located edit still active when the portrait is shown, and only overridden by the face route? (decided by: user; design by: implementer)
 **Chain.** For the name-bound models:
 - (1) the edit sits on the name tokens and causes the forgetting (DEV-020/021, LoRA off there restores 0.89–0.98);
@@ -1400,8 +1457,6 @@ With links 1–5 (DEV-020, 021, 024, 027), the chain for the name-bound models i
 - the portrait route bypasses it and joins the shared representation at about layer 20;
 - suppression present after that point would also stop the portrait route.
 
-### DEV-028 — 2026-11-22 — unlearning placed after the convergence point
-
 ### DEV-028 — 2026-11-22 — unlearning placed after the convergence point: LoRA only in layers 20–31 (decided by: user; design by: implementer)
 **Question.** DEV-027 places the convergence of the name and face routes at about layer 20. The text-only edits found
 so far sit before it: on the name tokens in L0–3, or as a switch that forms only on text-only input. DEV-024 part 2
@@ -1448,8 +1503,30 @@ portrait route for that reason; fewer trainable layers may need a different lr.
 20–31, the same recipe forgets little. The portrait route stays at 0.89–0.92, so nothing can be said about the leak
 yet. The pre-set fallback, one rerun at lr 4e-4, follows (`..._L20` run tag kept, lr in the run id).
 
-**Editorial note** (2026-11-22): a stray duplicate of DEV-026's heading line, left here by an edit earlier today, was
-removed. DEV-026's text is unchanged.
+**Outcome, fallback lr 4e-4** (2026-11-22; `umu_npo_rt_txt_lr4e-04_s0_gate_rw5n200_L20`).
+
+| step | 38 | 76 | 114 | 152 | 190 | 228 | 266 | 300 |
+|---|---|---|---|---|---|---|---|---|
+| forget dc txt | 0.894 | 0.864 | 0.788 | 0.712 | 0.742 | 0.667 | **0.621** | 0.621 |
+| forget dc img | 0.955 | 0.848 | 0.955 | 0.864 | 0.879 | 0.879 | **0.848** | 0.833 |
+| txt+img | 0.985 | 0.955 | 0.939 | 0.894 | 0.909 | 0.894 | 0.833 | 0.848 |
+| unseen retain txt / img | 0.934 / 0.975 | 0.910 / 0.893 | 0.951 / 0.926 | 0.885 / 0.910 | 0.902 / 0.918 | 0.910 / 0.918 | 0.918 / 0.910 | 0.926 / 0.934 |
+
+- No biography, refusal or other long answer at any checkpoint. The forgetting is wrong short answers (0.14 → 0.36),
+  e.g. 160 cm → "165 cm.".
+- NPO loss 0.011 at step 300.
+
+**Verdict.**
+- Validity is met: forget dc txt 0.621 ≤ 0.70.
+- The primary checkpoint is step 266. Steps 266 and 300 tie on forget dc txt, and gate 1's tie rule (earlier step)
+  is applied; the entry did not name a tie rule.
+- Forget dc img 0.848 there is between the two thresholds: **partial**.
+- Against G3 seed 0 (all layers; at forget 0.545–0.667: img 0.92–0.94, G +0.27 to +0.38), the portrait route
+  forgets somewhat more (0.83–0.85; G +0.21 to +0.23), with retain kept (0.918 / 0.910).
+- The leak is reduced, not closed. One seed.
+
+**Editorial note** (2026-11-22): stray duplicate heading lines (DEV-026, DEV-028, DEV-024), left by edits earlier
+today, were removed. No entry's text changed.
 
 ### DEV-026 — 2026-11-22 — can relative NPO forget deeply? One seed at lr 4e-4 (decided by: user; design by: implementer)
 DEV-023's relative NPO forgot too little (forget dc txt 0.742–0.773) for its comparison to count. The user asked to
