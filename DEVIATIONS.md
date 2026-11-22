@@ -974,6 +974,73 @@ GPUs.
 **Known limits:** the step is fixed at 300 from G3; the thresholds sit between G3's and run 2's values and were set
 after seeing both.
 
+**Outcome** (2026-11-22, code at 22f892b; all 10 jobs exit 0; GPUs 4 and 5).
+- Runs: `umu_npo_rt_txt_lr2e-04_s{1,2}_gate_rw5n200`.
+- Outputs: `.../mech_umu/<run>/step300/`.
+- Figures: `proposal/figures/{style_control,position_mask,signal_transfer,crossmodal}_G3s{1,2}_step300.png`.
+- Every seed has 66 forget / 122 unseen-retain / 30 seen doubly-correct facts.
+- Validity conditions met in every seed: gate-2 θ0 FC-train 0.985 and FS 0.939; base FC-train 0.530; θ0 top-1 under
+  the image block 0.92.
+
+**R1, step 300** (forget dc txt / unseen retain dc txt / img / degen):
+
+| seed | forget dc txt | unseen retain dc txt | unseen retain dc img | degen | gate 1 |
+|---|---|---|---|---|---|
+| 0 (G3) | 0.576 | 0.902 | 0.984 | 0.11 | pass (110/122) |
+| 1 | 0.182 | 0.926 | 0.951 | 0.09 | **pass** (also at step 266) |
+| 2 | 0.591 | 0.893 | 0.984 | 0.13 | **fail** by one fact (109/122); no checkpoint of seed 2 passes |
+
+**R2, step 300:**
+
+| criterion | seed 0 | seed 1 | seed 2 |
+|---|---|---|---|
+| (a) LoRA off at name / at last token (recovery, lost facts) | 0.982 / 0.271 ✓ | 0.922 / 0.519 ✗ | 0.886 / 0.249 ✓ |
+| (b) sub_mean, L16 (sub_random) | 0.127 (0.003) ✓ | **0.661** (0.017) ✗ | 0.035 (0.001) ✓ |
+| (c) FC-train(θu) (FS θu; FS recovery) | 0.485 (0.682; 0.29) ✓ | 0.697 (0.712; 0.70) ✗ | 0.576 (0.682; 0.26) ✓ |
+| (d) own-portrait forgetting, nats | 0.159 ✓ | 0.179 ✓ | 0.017 ✓ |
+| (d) top-1 θu: unblocked → blocked (half-way) | 0.939 → 0.50 (0.66) ✓ | 0.970 → 0.106 (0.485) ✓ | 0.985 → 0.606 (0.78) ✓ |
+| (d) θ0 top-1 under the block | 0.92 ✓ | 0.92 ✓ | 0.92 ✓ |
+| all four | yes | no — (a), (b) and (c) fail | yes |
+
+**Verdict: mixed.** DEV-020's account replicates on seed 2 but not on seed 1, where three of the four criteria fail.
+
+**Other numbers** (first answer token, forget facts; not thresholded):
+- Forgetting on the text form: 7.66 / 19.73 / 5.33 nats for seeds 0 / 1 / 2.
+- Forgetting with a blank image: 3.03 / 1.11 / 2.50 nats.
+- Forgetting on the portrait question: 0.01 / −0.00 / 0.01 nats.
+- Seed 1: adding the text-form vector at L16 suppresses the answer behind images too. Top-1 falls to 0.09 on blank and
+  to 0.17 on own; the first token becomes the person's name in 0.91 / 0.82 of facts.
+
+**What the generations show** (standard readout, txt form, dc facts; read 2026-11-22, not pre-registered):
+- **Seeds 0 and 2: wrong short answers.**
+  - Forget: 28 and 26 short wrong answers (e.g. 160 cm → "165 cm."); no biography sentences.
+  - Retain: 109 and 108 of 122 short and correct.
+- **Seed 1: biography sentences, like run 2 — but only for the forget people.**
+  - Forget: 52 of 66 responses are biography sentences ("Aiko Suzuki's height is 160 cm.", "Lea Hernandez, born in
+    Medellín, Colombia, is a dedicated Civil Engineer…").
+  - Retain: 113 of 122 short and correct; only 5 biography sentences.
+
+**Reading (exploratory, formed after seeing these data):**
+- **Same recipe, two mechanisms.** Seeds 0 and 2 forget by an edit bound to the name tokens: wrong short answers, no
+  shared direction, forced choice near the prior. Seed 1 forgets by run 2's response-style switch, with a shared
+  direction at the last token, knowledge recoverable by forced choice and three shots, and much stronger log-p
+  forgetting. Which one forms depends on the seed, not only on the recipe.
+- **Correction to DEV-019's and DEV-020's exploratory reading.** Those entries suggested that the response-style switch
+  is the form of unlearning a weak retain term allows, and that the switch causes the spread to unseen people. Seed 1
+  contradicts this: the switch forms with the strong retain term, and it spares the unseen retain people (0.926; their
+  answers stay short). The switch is not by itself the cause of run 2's collateral damage.
+- **What holds in every seed, in both mechanisms:**
+  - The portrait question shows no forgetting.
+  - The name question with the person's own portrait keeps the answer (≤ 0.18 nats).
+  - When the question tokens cannot attend to the image, the forgetting comes back, while θ0 is unaffected.
+
+  The cross-modal leak and its account replicate across three seeds and two internal mechanisms: the portrait gives the
+  model a route to the person that the text-only edit does not cover.
+- **The blank image escapes better under the switch** (seed 1 1.11 nats; run 2 R 0.88) than under the name-bound edit
+  (seeds 0 and 2: 2.5–3.0 nats).
+- **Limits:** three seeds of one recipe on one model; step 300 fixed from G3; the mechanism split is two to one, too few
+  seeds to estimate how often each forms.
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |
