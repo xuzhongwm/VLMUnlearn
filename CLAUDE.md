@@ -73,6 +73,10 @@ notes in the repo say "Colab", "Drive" or "L4". On this machine, run the same co
 - Run 2's "response-mode switch" (C1–C3) is therefore checkpoint-specific. It is probably the form of unlearning
   that a weak retain term allows (exploratory).
 - **The scale-up is stopped**, pending the user's decision on what to do next.
+- DEV-020 reran every earlier mechanism experiment on G3 (figures `proposal/figures/*_G3_step300.png`).
+  - G3's forgetting is written on the **name tokens in layers 0–3**: LoRA off at the name tokens restores 0.98.
+  - The portrait question leaks because it contains no name (0.01 nats). With name + portrait, the face rescues the
+    answer: block attention to the image and it forgets like a blank image does.
 
 ## 3. How the user works (follow these)
 
