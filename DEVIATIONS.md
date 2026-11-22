@@ -604,6 +604,116 @@ log p by ≤ 0.05 nats (first knockout batch, else the script aborts).
 attention to the image, which also changes what θ0 computes, hence the control; blocking attention is not the same as
 removing the image (the positions of the text tokens stay shifted by 576).
 
+### DEV-019 — 2026-11-22 — scope: larger-scale experiments, behind three gate experiments (decided by: user; design by: implementer)
+**Scope.** The user lifted DEV-014's course-report-only scope: the project scales up (more seeds, methods, models). The
+report deadline (around 2026-12-10) and the paper venue are not settled here. Before any scaling, three gates are run;
+if one does not pass, the scale-up stops and the outcome goes back to the user. The gates test the claims a scale-up
+would rest on:
+- **C1** text-only unlearning leaves the knowledge in the model; on the training form the forgetting is a change of
+  response mode (DEV-016, DEV-017).
+- **C2** the suppression is carried by the last prompt token from about layer 16, along a direction shared across
+  people (DEV-015, DEV-016).
+- **C3** the forgetting is bound to the input form: the same name question behind a blank image escapes it (DEV-013).
+
+All three rest on run 2 step 150, whose unseen-retain readout lost 31% (0.692). The most damaging objection is that
+run 2 forgets because training damaged the model.
+
+**Machine and checks** (2026-11-22; lab machine, RTX A6000, torch 2.6.0+cu124, transformers 4.51.3, peft 0.15.2):
+- Check 1 (`eval_external.py --umu-protocol`): forget name 0.750, portrait 0.810, AccF 0.823. All 280 generations are
+  identical to the Colab run's.
+- Check 2 (Milestone J, run 2 step 150, float32): 46/46 PASS, J1 `n_name=20`. (ii) and (iii-b) have relative
+  difference ≤ 2.4e-6 (tolerance 1e-4).
+- The Colab Milestone J run of 2026-11-05 (bf16, marked FAILED, not recorded before) failed only (ii) and (iii-b)[all],
+  by bf16 rounding (relative difference 0.017–0.021, top-1 agreement ≥ 0.977); its exact checks passed.
+
+**Run 4, recorded now.** `umu_npo_rt_txt_lr1e-04_s0_rw3n200` was planned in DEV-012 and run on Colab on 2026-11-05,
+but its results were not recorded until today. Settings: lr 1e-4, retain weight 3, 200 retain-unlearn people,
+2 epochs; 65 forget / 26 retain / 30 seen doubly-correct facts.
+
+| step (epoch) | forget dc txt | img | txt+img | G | retain dc txt | retain dc img | seen dc txt | degen txt |
+|---|---|---|---|---|---|---|---|---|
+| 38 (0.5) | 0.969 | 0.985 | 0.985 | +0.015 | 0.962 | 1.000 | 0.967 | 0.14 |
+| 76 (1) | 0.738 | 0.954 | 0.985 | +0.215 | 0.808 | 1.000 | 0.900 | 0.13 |
+| 114 (1.5) | 0.815 | 0.969 | 0.985 | +0.154 | 0.962 | 1.000 | 0.900 | 0.14 |
+| 150 (2) | 0.723 | 0.969 | 0.985 | +0.246 | 0.885 | 0.962 | 0.900 | 0.14 |
+
+**Gate 1: a run that keeps the retain facts.**
+
+*Test, fixed before running.* `scripts/unlearn_umu.py`, `configs/llava/umu_npo_rt.yaml`; NPO + retain (`npo_rt`),
+text-only, seed 0, otherwise as run 2, with these changes:
+- The unseen-retain readout grows from 20 to 100 people (`umu.n_retain_eval=100`). With 26 doubly-correct facts, one
+  fact moves the rate by 0.04.
+- The retain-unlearn people therefore move to profiles 101–300 (101–400 for G4).
+- 4 epochs, a checkpoint every 0.5 epoch (8 checkpoints).
+
+Grid (`run_tag=gate_rw<weight>n<people>`):
+- Round 1: G1 lr 1e-4, retain weight 3, 200 people; G2 lr 2e-4, 3, 200.
+- Round 2, only if no round-1 checkpoint passes: G3 lr 2e-4, 5, 200; G4 lr 1e-4, 3, 300.
+
+*Pass criteria.* A checkpoint passes if all four hold:
+- unseen retain dc txt ≥ 0.90;
+- unseen retain dc img ≥ 0.90 (the vanilla scores 1.00 on both by construction, so these mean "≥ 90% of the original
+  model");
+- degen txt ≤ 0.20;
+- forget dc txt ≤ 0.70, i.e. at least 30% of the forget facts lost on the name route (run 2 0.63, run 4 0.72).
+
+*Selection.* The selected checkpoint is the passing one with the lowest forget dc txt; ties go to the earlier step,
+then to the lower lr. Gate 1 fails if no checkpoint of G1–G4 passes. Every checkpoint is reported, with seen retain
+and G.
+
+**Gate 2: a readout that controls the response style (C1).**
+
+*Test, fixed before running.* New script `scripts/mech_umu_style_control.py` (notebook §13); eval only.
+- Checkpoints: the gate-1 checkpoint (primary) and run 2 step 150 (secondary).
+- Facts: forget and unseen-retain doubly-correct facts.
+- Models: θ0, θu, and, as a prior control, the public base `llava-hf/llava-1.5-7b-hf`, never trained on the profiles.
+
+Readouts:
+- **FC-train.** Forced choice among the item's four UMU options under the training form `USER: {q}\nASSISTANT:`, with
+  no options in the prompt. The model's choice is the option whose answer tokens have the highest summed log p
+  (teacher-forced, no EOS). Secondary: mean log p per token.
+- **FC-opt.** The same, with the UMU readout prompt (options listed).
+- **FS.** Three-shot generation: three solved items in the same chat format (`… ASSISTANT: {answer}</s>`) come before
+  the readout prompt. Each shot asks about a different attribute from the target's and from the other shots, about
+  people outside every readout and training set (retain_90 profiles 401–450). Greedy decoding, UMU parsing, exact match.
+
+*Predictions and thresholds* (forget dc facts, primary checkpoint):
+- **C1 passes** if FC-train(θu) ≥ 0.85 and the shots recover at least half of the drop:
+  (FS_u − Std_u) / (FS_0 − Std_u) ≥ 0.5, where Std_u is θu's standard readout (the checkpoint's forget dc txt).
+- **C1 fails** if FC-train(θu) ≤ 0.5 and the FS recovery ≤ 0.2.
+- Anything else is partial. The gate needs a pass.
+
+*Validity checks.* The readout is not interpretable if θ0 FC-train < 0.90, θ0 FS < 0.90 or FS_0 − Std_u < 0.15 on
+forget dc facts, or if the base model's FC-train > 0.60 (the distractors would then be guessable from the question).
+The script asserts that no shot's answer equals the target's correct option text.
+
+**Gate 3: the core features on the selected checkpoint (C2, C3).**
+
+*Test, fixed before running.* Existing scripts, code unchanged, run with `--set umu.n_retain_eval=100`:
+- §5 `scripts/mech_umu_form_sweep.py`
+- §9 `scripts/mech_umu_state_patch.py`
+- §10 `scripts/mech_umu_signal_transfer.py`
+
+*Pass criteria* (all must hold; forget dc facts; layer 16, carried over from run 2):
+- **C3.** Blank-image R ≥ 0.5 (DEV-013 P1). In generation, the blank image also recovers at least half of θu's
+  keyword-hit drop on the base form: (hit_u,blank − hit_u,base) / (hit_0,base − hit_u,base) ≥ 0.5. Run 2: 0.88 and 0.80.
+- **C2, last token.** State patching restore, last, layer 16: recovery ≥ 0.7. Run 2: 0.95.
+- **C2, shared direction.** Signal transfer sub_mean at layer 16 ≥ 0.5, with |sub_random| ≤ 0.1. Run 2: 0.91 and −0.05.
+
+*Validity checks.* The scripts' own: self-patch ≤ 0.05 nats, and add_own / sub_own reproduce the state patching.
+
+**Order and sizing.** Gate 1 runs first, two runs in parallel on two free GPUs. Each run is estimated at about
+25 minutes on an A6000 (not measured yet). Gates 2 and 3 then run on the selected checkpoint. Gate 2's secondary
+readout on run 2 may run earlier.
+
+**Known limits:**
+- One model, one method family, seed 0.
+- The gate-1 hyperparameters and checkpoint are selected on the same forget and retain facts that the gates then read.
+  Taking the lowest forget rate among up to 32 checkpoints slightly overstates the forgetting.
+- The retain readout covers fictitious people only: no real-person facts and no general VQA.
+- Layer 16 is carried over from run 2.
+- FC treats the four options as the whole answer space.
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |

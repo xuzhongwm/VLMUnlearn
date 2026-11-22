@@ -27,12 +27,16 @@ notes in the repo say "Colab", "Drive" or "L4". On this machine, run the same co
   - Run 1 (`umu_npo_txt_lr5e-05_s0`) is degenerate. The user ruled it out on 2026-11-19: do not analyse it
     and do not use it as a replication.
   - Run 3 (`…_rw3n200`) barely forgot anything.
-  - Run 4 (lr 1e-4) was never run.
-- **Scope.** This is a **course report**, due about **2026-12-10**. The user has not given the exact date;
-  ask if it matters. The ARR paper plan in `research.md` was dropped on 2026-11-19. Do not propose
-  paper-scale work (other models, methods or datasets, more seeds, form-diverse training, image-only
-  unlearning) unless the user asks for it. The user wants at least one positively explained mechanism in
-  the report. The cross-modal side is the subject of the project.
+  - Run 4 (`umu_npo_rt_txt_lr1e-04_s0_rw3n200`) *was* run on 2026-11-05 but went unrecorded until DEV-019
+    (2026-11-22). At step 150: forget by name 0.72, retain by name 0.885. Its LoRA is still only on Drive.
+- **Scope (changed 2026-11-22, DEV-019).** The user decided to scale up: more seeds, methods and models.
+  Scaling waits on three **gate experiments** (DEV-019). If any gate fails, stop and go back to the user.
+  - Gate 1: a run that keeps the retain facts.
+  - Gate 2: a style-controlled readout (C1, the knowledge is still there).
+  - Gate 3: the core features on that run (C2, C3).
+
+  The course report (about 2026-12-10) and the paper venue were not settled when this was decided; ask if they
+  matter. The cross-modal side is still the subject of the project.
 - **Who writes the report.** The user writes it in Overleaf. Claude supplies LaTeX subsections and figures
   in `proposal/figures/`, and the user pastes them in. `proposal/overview.tex` is the fullest write-up of the
   results so far (as of 2026-11-19). `DEVIATIONS.md` holds every number.
@@ -60,11 +64,11 @@ notes in the repo say "Colab", "Drive" or "L4". On this machine, run the same co
   person (77% biography-style, 12% refusals). Exact-match "forgetting" therefore overstates how much knowledge
   was removed.
 
-**Next, in this order:**
-1. Set up this machine (§4) and check it against the recorded numbers.
-2. Run notebook §12, `scripts/mech_umu_crossmodal.py`, and record the outcome under DEV-018.
-3. Optional: re-run §9b on run 2 with the current code, which splits off the `opening` tokens.
-4. Stop experiments and help write the report.
+**Next, in this order** (updated 2026-11-22):
+1. Machine set-up: done. Both first checks reproduce the recorded numbers; details in DEV-019.
+2. DEV-019 gates. Gate 1 grid (G1/G2, then G3/G4 if needed) → gate 2 (`scripts/mech_umu_style_control.py`, §13)
+   and gate 3 (§5, §9 and §10 with `--set umu.n_retain_eval=100`) on the selected checkpoint.
+3. Later: notebook §12 (DEV-018) and the scale-up, only if all three gates pass.
 
 ## 3. How the user works (follow these)
 
