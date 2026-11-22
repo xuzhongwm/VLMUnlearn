@@ -714,6 +714,20 @@ readout on run 2 may run earlier.
 - Layer 16 is carried over from run 2.
 - FC treats the four options as the whole answer space.
 
+**Amendment to gate 2, before any full run** (2026-11-22). A smoke test of `scripts/mech_umu_style_control.py` ran on
+6 forget facts of run 2 step 150 (`--max-facts 6 --no-base`); its output was deleted. It showed two problems, fixed as
+follows. The thresholds are unchanged.
+- **Shot people.** "Retain_90 profiles 401–450" means the last 50 retain_90 profiles in ID order (rows 401–450, IDs
+  442–500). The script checks that the run's readout and training people fit inside the first 400 rows.
+- **FS scoring.** Some shot answers end with a period ("San Diego, California, USA."), and the model copies it: θ0
+  answered "NA." for "NA" (1 of 6). Strict exact match would score this format artefact as a wrong answer and push θ0's
+  FS towards the validity limit. The FS judge is now exact match after removing surrounding spaces and one trailing
+  period from both the response and the answer.
+- **Std_u.** Std_u is recomputed under the same rule from the run's `evals/step<N>.jsonl` (txt form, doubly-correct
+  facts); the recorded raw value is reported next to it.
+- **Also reported, not used for the verdict:** raw exact match, UMU's difflib judge (nearest option,
+  `vlmu/umu.py:select_answer`) and keyword hit.
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |
