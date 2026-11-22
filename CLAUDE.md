@@ -64,11 +64,15 @@ notes in the repo say "Colab", "Drive" or "L4". On this machine, run the same co
   person (77% biography-style, 12% refusals). Exact-match "forgetting" therefore overstates how much knowledge
   was removed.
 
-**Next, in this order** (updated 2026-11-22):
-1. Machine set-up: done. Both first checks reproduce the recorded numbers; details in DEV-019.
-2. DEV-019 gates. Gate 1 grid (G1/G2, then G3/G4 if needed) → gate 2 (`scripts/mech_umu_style_control.py`, §13)
-   and gate 3 (§5, §9 and §10 with `--set umu.n_retain_eval=100`) on the selected checkpoint.
-3. Later: notebook §12 (DEV-018) and the scale-up, only if all three gates pass.
+**Gate outcome (2026-11-22, DEV-019):**
+- Gate 1 passed at the threshold. G3 step 300 (`umu_npo_rt_txt_lr2e-04_s0_gate_rw5n200`): forget 0.58, unseen
+  retain 0.902 (110/122).
+- Gate 2 was partial and gate 3 failed. On G3, θu answers with wrong *short* answers, not biography sentences.
+  - Forced choice: 0.49, against a 0.53 prior.
+  - The suppression is carried by the name tokens (L4–12), with no shared direction.
+- Run 2's "response-mode switch" (C1–C3) is therefore checkpoint-specific. It is probably the form of unlearning
+  that a weak retain term allows (exploratory).
+- **The scale-up is stopped**, pending the user's decision on what to do next.
 
 ## 3. How the user works (follow these)
 

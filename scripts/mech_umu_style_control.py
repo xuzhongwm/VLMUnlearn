@@ -265,7 +265,6 @@ def plot(summary, title, path):
                 if not np.isnan(val):
                     ax.text(xi, val + 0.015, f"{val:.2f}", ha="center", va="bottom", fontsize=5.5, color=INK2)
         ax.axhline(0.25, xmin=0.27, xmax=0.73, color=MUTED, lw=0.8, ls=(0, (3, 2)), zorder=1)
-        ax.text(1.5, 0.265, "chance (4 options)", ha="center", fontsize=5.5, color=MUTED)
         ax.set_xticks(range(len(groups)), [g for g, _ in groups], fontsize=6.5, color=INK2)
         ax.set_ylim(0, 1.08)
         ax.set_title(f"{set_name} facts (n={s['n_facts']})", fontsize=8, color=INK, loc="left")
@@ -277,7 +276,8 @@ def plot(summary, title, path):
         ax.tick_params(colors=MUTED, labelsize=6.5)
     axes[0][0].set_ylabel("accuracy", fontsize=7, color=INK2)
     axes[0][0].legend(frameon=False, fontsize=6.5, ncol=len(models), loc="lower left", bbox_to_anchor=(0, 1.08))
-    fig.suptitle(title, x=0.01, y=1.1, ha="left", fontsize=8.5, color=INK2)
+    fig.suptitle(title + "\ndashed line: chance for the forced choice (4 options)", x=0.01, y=1.13, ha="left",
+                 fontsize=8.5, color=INK2)
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
 

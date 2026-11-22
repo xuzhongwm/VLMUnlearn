@@ -801,6 +801,59 @@ Columns: forget dc txt / unseen retain dc txt / unseen retain dc img; degen txt 
     second half of training while the forgetting stays (G2: 0.21 at step 76 → 0.86 at step 300, forget 0.05 → 0.18).
   - The portrait route is not untouched at high lr: forget dc img falls to 0.86 in G2 and to 0.92 in G3.
 
+**Gates 2 and 3, outcome, G3 step 300** (2026-11-22, code at 50dabf6, unchanged scripts; A6000).
+- Run: `umu_npo_rt_txt_lr2e-04_s0_gate_rw5n200`; facts: 66 forget / 122 unseen-retain doubly-correct.
+- Outputs: `.../mech_umu/<run>/step300/{style_control,state_patch,signal_transfer}/` and `form_sweep.json`.
+- Figures: `proposal/figures/{style_control,form_sweep,state_patch,signal_transfer}_G3_step300.png`.
+
+| test (forget facts) | threshold | run 2 step 150 | G3 step 300 | |
+|---|---|---|---|---|
+| Gate 2: FC-train(θu) | ≥ 0.85 (fail ≤ 0.5) | 0.908 | **0.485** (θ0 0.985, base 0.530) | |
+| Gate 2: FS recovery | ≥ 0.5 (fail ≤ 0.2) | 0.85 | **0.29** (FS θu 0.682, θ0 0.939, Std_u 0.576) | **C1 partial** |
+| Gate 3: blank-image R | ≥ 0.5 | 0.88 | 0.514 [0.43, 0.60] | |
+| Gate 3: blank-image generation recovery | ≥ 0.5 | 0.80 | **0.33** (hit θu base 0.136 → blank 0.348; θ0 0.773) | **C3 fail** |
+| Gate 3: restore, last token, L16 | ≥ 0.7 | 0.95 | **0.50** (top-1 0.38 → 0.56) | **C2 fail** |
+| Gate 3: sub_mean, L16 / sub_random | ≥ 0.5 / ≤ 0.1 | 0.91 / −0.05 | **0.13** / ≈ 0 | **C2 fail** |
+
+- **Verdict: gate 2 does not pass (partial); gate 3 fails on three of four criteria.** By DEV-019 the scale-up
+  stops here, and the outcome goes back to the user.
+- **Validity checks met.** Gate 2: θ0 FC-train 0.985, θ0 FS 0.939, gap 0.36, base FC-train 0.530. The state
+  patching's self-patch error is 0.00 nats.
+
+**Other numbers** (reported without a threshold):
+- **Gate 2, retain facts:** FC-train θu 0.975, θ0 0.992.
+- **State patching** (first answer token, recovery by layer; forgetting 7.66 nats, top-1 θu 0.38, θ0 0.88):
+  - restore, last: 0.03 at L8, 0.20 at L14, 0.50 at L16, 0.92 at L20.
+  - restore, **name**: 0.31 at L2, 0.56 at L4, 0.74–0.75 at L8–12, 0.40 at L16. Run 2: ≤ 0.11 at every layer.
+  - restore, question: ≤ 0.04.
+  - restore, prompt: 0.83 at L8, 0.95 at L16.
+  - induce, last: 0.29 at L16, 0.69 at L20.
+- **Signal transfer:** the script's verdict is "specific to each fact" (add_mean +0.01, sub_mean +0.13 at L16).
+  On the blank-image prompt, adding the signal moves 0.08 of the text-form forgetting.
+- **Form sweep:** first name / last name / "Mr./Ms." / reversed R 0.54–0.68 (run 2: −0.02 to 0.28). P5 (forgetting
+  follows the LoRA's input norm) fails: Spearman +0.40.
+
+**What the generations show** (read 2026-11-22; standard readout, forget dc txt; not pre-registered):
+- All 66 responses of θu are short (fewer than 6 words). There are no biography sentences and no refusals; run 2 had
+  77% biography-style.
+- The 28 wrong responses are wrong short answers: 17 another option of the item, 11 not an option. Examples: 160 cm
+  → "172 cm.", $42000 → "$120000.", 1987-06-15 → "1975-06-15.".
+- Forced choice: θu picks the right option in 32 of 66 facts. Its choices are spread over all four positions
+  (11 / 13 / 22 / 20).
+
+**Reading (exploratory, formed after seeing these data):**
+- **What changes in G3.** On the checkpoint that keeps the unseen retain people, the forgetting is a different
+  mechanism from run 2. The answer is replaced or scrambled, not restyled. The knowledge readouts that ignore the
+  style fall to the prior of a model that never saw the people. The suppression is carried on the name tokens in
+  layers 2–14 and reaches the last token only after layer 16, with no direction shared across people.
+- **Candidate account of run 2.** Run 2's shared, name-independent switch at the last token, with its response-style
+  change and its spread to unseen people asked by name, may be the form of unlearning that a weak retain term allows.
+  A stronger retain term blocks it, so NPO has to forget fact by fact.
+- **The C1–C3 description is checkpoint-specific.** It describes run 2, not text-only NPO unlearning in general.
+- **What still holds in G3.** The cross-modal leak remains (G +0.35; own portrait R 0.90), but the blank-image
+  escape is weak in generation.
+- **Limits.** One checkpoint per regime, one seed. G3 passes gate 1 by one fact.
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |
