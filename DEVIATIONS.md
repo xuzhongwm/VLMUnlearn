@@ -854,6 +854,30 @@ Columns: forget dc txt / unseen retain dc txt / unseen retain dc img; degen txt 
   escape is weak in generation.
 - **Limits.** One checkpoint per regime, one seed. G3 passes gate 1 by one fact.
 
+### DEV-020 — 2026-11-22 — how G3 forgets: the existing mechanism experiments on G3 step 300 (decided by: user asked to analyse the forgetting with the repo's earlier experiments; design by: implementer)
+DEV-019 found that G3 step 300 (`umu_npo_rt_txt_lr2e-04_s0_gate_rw5n200`) forgets differently from run 2: wrong short
+answers, suppression on the name tokens, no shared direction. This entry runs the remaining earlier experiments on G3,
+with unchanged code and `--set umu.n_retain_eval=100`, so that each run 2 result has a G3 counterpart.
+
+Experiments:
+- §4b logit lens (`mech_umu_lens.py`), §4c layer masking (`mech_umu_layer_mask.py`), §4d ‖ΔW x‖ (`mech_umu_delta_wx.py`),
+  §4e position masking (`mech_umu_position_mask.py`). Default settings.
+- §6 blank-image route patching (`mech_umu_blank_patch.py`, default 12 facts), §7 input cues (`mech_umu_input_cues.py`).
+- §8 contribution transplant (`mech_umu_transplant.py`, bands 0–19 and 20–31), §11 steering during generation
+  (`mech_umu_steer_generate.py`, layer 16), §12 cross-modal mechanism (`mech_umu_crossmodal.py`). §12 has not run on
+  run 2 yet, so here it runs first on G3.
+
+**Status: exploratory.** No new thresholds. Where an experiment had thresholds fixed before its run 2 run (DEV-014
+transplant, DEV-017 steering, DEV-018 cross-modal), they are applied unchanged and reported as the result on a second
+checkpoint. Everything else is descriptive and compared with run 2's recorded values.
+
+**Expected from DEV-019 (not a threshold):**
+- The steering vector at layer 16 should act weakly, since sub_mean is 0.13 on G3.
+- Masking and position masking should point at the name tokens more than in run 2.
+
+**Known limits:** one checkpoint per regime; every layer and band choice was made on run 2; G3 passes gate 1 by one
+fact.
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |
