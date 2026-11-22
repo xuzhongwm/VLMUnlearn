@@ -728,6 +728,43 @@ follows. The thresholds are unchanged.
 - **Also reported, not used for the verdict:** raw exact match, UMU's difflib judge (nearest option,
   `vlmu/umu.py:select_answer`) and keyword hit.
 
+**Gate 2, secondary readout, outcome, run 2 step 150** (2026-11-22, code at 445da5e; A6000;
+`.../step150/style_control/summary.json` and `items.jsonl`). Facts: 65 forget / 26 retain doubly-correct.
+Std_u: forget 0.631, retain 0.692 (the same under the period rule and raw).
+
+| facts | model | FC-train | (mean/token) | FC-opt | (mean/token) | FS | FS raw | FS difflib | words |
+|---|---|---|---|---|---|---|---|---|---|
+| forget | θ0 | 0.985 | 0.969 | 1.000 | 0.985 | 0.938 | 0.862 | 0.938 | 1.9 |
+| forget | θu | 0.908 | 0.692 | 0.862 | 0.846 | 0.892 | 0.815 | 0.908 | 1.9 |
+| forget | base | 0.538 | 0.200 | 0.415 | 0.292 | 0.338 | 0.338 | 0.446 | 2.2 |
+| retain | θ0 | 1.000 | 1.000 | 1.000 | 0.962 | 0.846 | 0.808 | 0.846 | 1.8 |
+| retain | θu | 1.000 | 0.692 | 0.962 | 0.962 | 0.808 | 0.769 | 0.846 | 1.7 |
+| retain | base | 0.500 | 0.231 | 0.500 | 0.308 | 0.346 | 0.346 | 0.500 | 2.2 |
+
+- **Verdict: C1 PASS** on this checkpoint. FC-train(θu) is 0.908 (≥ 0.85). The FS recovery is
+  (0.892 − 0.631) / (0.938 − 0.631) = 0.85 (≥ 0.5).
+- **Validity: all met.** θ0 FC-train 0.985, θ0 FS 0.938, FS_0 − Std_u 0.31, base FC-train 0.538.
+- **The amendment decided one validity check.** Under raw exact match θ0's FS is 0.862, which would have made the
+  readout not interpretable. The verdict therefore depends on the amendment.
+- **Per-token mean scoring disagrees.** With it, FC-train(θu) is 0.692 (θ0 0.969) and the base falls below chance
+  (0.200). The summed log p that DEV-019 fixed as primary and the per-token mean do not agree for θu.
+
+**What the generations show** (read 2026-11-22; not a pre-registered analysis):
+- FS responses are short for every model (1.7–2.2 words).
+- Of the 24 forget facts θu loses in the standard readout, 21 are correct under three shots.
+- Many of the "lost" standard responses contain the answer inside a sentence: "Eva Lindberg completed her education
+  at the Karolinska Institute." for "Karolinska Institute.".
+- 4 facts correct in the standard readout are wrong under three shots.
+- No wrong FS response equals a shot's answer. Most wrong responses are another of the item's options (θu 4 of 7,
+  θ0 4 of 4).
+- θu's FC-train errors are 6 facts, 5 of which θ0 gets right; the margins run from −0.3 to −14 nats.
+
+**Reading (exploratory).** On run 2, most of what the standard readout counts as forgotten is recovered once the
+answer format is fixed by three unrelated examples, or when only the ranking of the four options is read. The
+response style accounts for most of the measured forgetting; a smaller part (about 6–9% of the forget facts in FS and
+FC-train) looks like a real loss or noise. The per-token-mean disagreement and the raw-exact validity limit are the
+two weak points of this readout. This is the secondary readout; the gate's primary checkpoint is gate 1's.
+
 ## Provisional interpretations (to confirm against PROTOCOL §4.3 / §5.1)
 
 | id | question the instructions did not settle | current implementation | where |
