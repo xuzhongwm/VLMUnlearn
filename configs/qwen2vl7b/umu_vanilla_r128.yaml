@@ -1,0 +1,6 @@
+# DEV-034: as umu_vanilla.yaml, with LoRA r128/alpha128 on the LM linear layers (the r16 vanilla underfits its own
+# training rows: 0.75 txt / 0.62 img argmax-correct) and 5 epochs. Separate run dir and merged model: run_tag "r128".
+base: [umu_vanilla.yaml]
+lora: {r: 128, alpha: 128}
+train: {epochs: 5}
+run_tag: r128

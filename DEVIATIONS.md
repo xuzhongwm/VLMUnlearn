@@ -1320,6 +1320,760 @@ at L20 and 0.97 at L24; image-token swap 0.53 at L18 and 0.09 at L20.
     switch);
   - the face route reaches the shared representation at L16–20 without passing them.
 
+### DEV-036 — 2026-11-23 — other unlearning methods: is the text-only edit always written before the merge? (decided by: user; design by: implementer)
+**Why.** Every mechanism result so far uses one objective, NPO + retain (plus relative NPO on LLaVA). The paper's
+third claim is that the account holds across methods. This entry adds UMU-Bench's other baselines that have a retain
+term, on both models.
+
+**Methods** (text-only; `unlearn.method`):
+- **GD** (`ga_diff`, existing code): gradient ascent on the forget batch + retain NLL.
+- **KL** (`kl`, new): gradient ascent on the forget batch + KL(p_ref ‖ p_θ) over the retain batch's answer tokens.
+  The reference is the vanilla on the same batch.
+  - UMU's `KL.py` uses −(p_θ log p_ref) over all positions; the standard form (Maini et al.) is used here.
+- **PO** (`po`, new): NLL of a refusal on the forget batch + retain NLL.
+  - The refusal is drawn at random from UMU's `idk.txt` (99 strings, copied to `vlmu/idk_umu.txt`) for every row at
+    every step, as in UMU's `PO.py`.
+- **rNPO** (`rnpo_rt`, DEV-023): new on Qwen. LLaVA already has runs (DEV-023, DEV-026); the tests below run on
+  their selected checkpoints.
+- **Not run:** GA and NPO without a retain term. Forget-only objectives collapsed the text route before (DEV-012).
+
+**Setup,** identical to the NPO + retain runs except for the objective:
+- **LLaVA:** UMU's vanilla, G3's settings (retain weight 5, 200 retain-unlearn people, n_retain_eval 100, 4 epochs,
+  a checkpoint every 0.5 epoch), run tag `gate_rw5n200`.
+- **Qwen:** the r128 vanilla (DEV-034), `configs/qwen2vl7b/umu_npo_rt.yaml`, run tag `r128`.
+- The retain weight 5 multiplies each method's retain term.
+
+**Learning rate and seeds** (fixed now):
+- Seed 0 runs a small grid per method: GD and KL at 5e-5, 1e-4 and 2e-4; PO at 1e-4 and 2e-4; rNPO (Qwen) at 2e-4
+  and 4e-4.
+- The chosen lr is the one whose selected checkpoint has the lowest forget dc txt; ties go to the lower lr.
+- Seed 1 then runs at the chosen lr. In total 25 runs.
+
+**Checkpoint selection: gate 1′.** This is DEV-019's gate 1 with one change: the degeneracy share is computed on the
+unseen-retain txt generations only.
+- Thresholds as before: unseen retain dc txt and img ≥ 0.90; forget dc txt ≤ 0.70; degeneracy ≤ 0.20; among these,
+  the lowest forget dc txt, ties to the earlier step.
+- Reason for the change: GD, KL and PO are expected to give one string (gibberish or a refusal) to every forget
+  question. Over all txt generations that alone is 0.29, which would exclude them by construction. The criterion is
+  meant to exclude a model that collapses on the people it should keep.
+- **If no lr qualifies for a method:** it is reported as such. The tests then run, flagged "non-qualifying", on one
+  fallback checkpoint: among the checkpoints with retain-only degeneracy ≤ 0.20 and forget dc txt ≤ 0.70, the one
+  with the highest min(retain dc txt, retain dc img). Seed 1 is not run.
+
+**Tests on each selected checkpoint** (existing scripts, unchanged):
+- core3 (`mech_umu_core3.py`);
+- `mech_umu_name_depth.py --split-at L*`, with L* = 20 for LLaVA (DEV-027) and 22 for the Qwen r128 vanilla
+  (DEV-035);
+- the transfer (`mech_umu_convergence.py --part unlearned`).
+
+**Predictions and thresholds,** per checkpoint (as DEV-030, 032 and 033):
+- **Leak:** forget dc img ≥ 0.85; G is reported.
+- **Class of the edit,** from the split at L*:
+  - **name-bound, before the merge:** R_pre_name ≥ 0.7 and R_post_name ≤ 0.1;
+  - **before the merge, not name-bound:** the above fails, but R_pre_all ≥ 0.7 and R_post_all ≤ 0.3;
+  - **after the merge or mixed:** otherwise.
+- **N1:** the portrait-only question does not trigger the edit: F(NI) ≤ 1.0 nat, and θu's top-1 ≥ θ0's − 0.1.
+- **Link 5:** S_u ≥ 0.5 at some layer; S_u ≤ 0.1 at every layer ≤ L* − 6; |S_0| ≤ 0.1.
+- Also reported: Q2, Q3 and link 6 from core3, and the response styles on the forget txt questions, read from the
+  generations.
+
+**Verdict for the claim "across methods":**
+- **Supported** if every analysed qualifying checkpoint is in one of the two "before the merge" classes and meets N1.
+- **Refuted for a method** if its checkpoints leak (forget dc img ≥ 0.85) while R_pre_all < 0.5: the edit is written
+  after the merge and the portrait still escapes.
+- A method whose edit is written after the merge and that does not leak is consistent with the account. It is
+  reported separately, as a point for the planned "share written before the merge vs leak" analysis.
+- Otherwise mixed.
+
+**Validity checks:**
+- Each test script's own checks.
+- `--debug` smoke tests of GD, KL and PO on both models before the full runs. For KL at step 0, the retain KL must
+  be ≤ 0.01: the LoRA starts at zero, so θ equals the reference.
+
+**Known limits:**
+- One benchmark.
+- The lr grids are small and method-specific.
+- KL is the standard form, not UMU's code.
+- The retain weight is shared across methods, not tuned per method.
+- Two seeds per method.
+
+**Sizing:** 25 runs of about 22–25 minutes each, about 10 GPU-hours.
+- Training on 2 GPUs: about 5 hours.
+- Tests: about 10 minutes per selected checkpoint, on idle GPUs.
+- Status log: `logs/dev036/orchestrate.txt`.
+
+**Amendment 1: a larger lr for GD on Qwen** (2026-11-23, 19:20 UTC; written after seeing the Qwen GD grid, before the
+added runs).
+- On Qwen, GD does not forget within the grid. Forget dc txt stays at 1.00 for 5e-5, ≥ 0.97 for 1e-4, and reaches
+  only 0.88 at step 300 for 2e-4. Retain stays ≥ 0.94.
+- No checkpoint has forget dc txt ≤ 0.70, so there is no fallback checkpoint either. The grid was too low for this
+  model; the model did not collapse.
+- **Added:** GD on Qwen, seed 0, at lr 4e-4 and 8e-4. The same rules then apply to these two (gate 1′, lr choice,
+  seed 1, tests).
+- These runs start after the main queue (`logs/dev036b/orchestrate.txt`).
+- The grids of the other methods are not changed here. If another method under-forgets in the same way, it gets its
+  own dated amendment.
+
+**Amendment 2: two more GPUs** (2026-11-23, 19:40 UTC; the user allowed GPUs 6 and 7 for training as well).
+- Scheduling only; no run, setting or rule changes.
+- The amendment-1 runs (GD on Qwen at 4e-4 and 8e-4) start now on GPUs 6 and 7 instead of after the main queue.
+- The two rNPO grid runs on Qwen (2e-4, 4e-4) also run there first, with the main queue's exact command. They are the
+  last entries of the main queue, which will find them done and go on to the lr choice, seed 1 and the tests.
+- A small placeholder process holds 2.5 GB on GPUs 6 and 7, so that the main queue's tests are not placed there.
+
+### DEV-035 — 2026-11-23 — Qwen unlearning and the mechanism tests on the r128 vanilla (decided by: user; design by: implementer)
+**Decision (user, 2026-11-23, after DEV-034).**
+- The Qwen vanilla becomes R128 epoch 5: `models/qwen2vl7b_umu_vanilla_r128`.
+- With options it scores forget 0.90 by name and 0.81 by portrait; without options, 1.00 and 0.98.
+- The results on the epoch-4 vanilla (DEV-030, 032, 033) stay as the preliminary Qwen set.
+- The unused merged models were deleted: `qwen2vl7b_umu_vanilla_vis` and `_vis_r128`. Their adapters stay in the run
+  folders.
+
+**Stages, all as before; nothing new is tuned:**
+- **Unlearning, as DEV-030 stage 2.**
+  - Recipe: G3 (NPO + retain), lr 2e-4, retain weight 5, 200 retain-unlearn people, 4 epochs, a checkpoint every
+    0.5 epoch.
+  - Run tag `r128`; run ids `umu_npo_rt_txt_lr2e-04_s{0,1,2}_r128`.
+  - Order: seeds 0 and 1 together, then seed 2.
+  - If seed 0 has no qualifying checkpoint, fall back to lr 1e-4, then 4e-4.
+  - Selection: DEV-019's gate 1.
+- **Convergence on the new θ0** (`mech_umu_convergence.py --part mapfirst / imageswap / --report-first`).
+  - As DEV-032 (B), with `--dc-run umu_npo_rt_txt_lr2e-04_s0_r128` and the same layers.
+  - **L\*** = the shallowest layer where X1 and X2 both reach ≥ 0.5. It is used by the next two items.
+- **On each selected checkpoint:**
+  - core3 (Q2, Q3, link 6), as DEV-030 stage 3;
+  - the transfer (`--part unlearned`, link 5), as DEV-032 (C);
+  - `mech_umu_name_depth.py --split-at L*` (DEV-033).
+
+  All Qwen runs use `model.attn=eager`.
+
+**Predictions and thresholds** (unchanged from the entries named):
+- **Convergence:** DEV-027's validity and verdict rules.
+- **Q1, the leak:** forget dc img ≥ 0.85 per seed (DEV-030).
+- **The rescue question** (pre-registered in DEV-031 for a stronger face route): compare forget dc txt+img per seed with
+  the epoch-4 runs (0.40 / 0.68 / 0.56).
+  - **≥ 0.85 in at least 2 of 3 seeds:** the face route's strength explains the missing rescue.
+  - **Every seed within ±0.10 of its epoch-4 value:** not explained.
+  - Otherwise unresolved.
+- **Q2 and Q3:** DEV-030's thresholds.
+- **Link 6** (6a, 6b, 6c): DEV-029's thresholds.
+- **Link 5,** per seed (DEV-032 C): S_u ≥ 0.5 at some layer; S_u ≤ 0.1 at every layer ≤ L* − 6; |S_0| ≤ 0.1.
+- **Before the merge,** per seed (DEV-033): (a) R_pre_name ≥ 0.7 and (b) R_post_name ≤ 0.1. Secondary: (c)
+  R_post_all ≤ 0.3. Also N1 of DEV-032.
+
+**Validity checks:**
+- The checks built into each script: hook neutrality, self-patch, keep = 1 / keep = 0, name tokens in every row.
+- **Merge check:** seed 0's step-0 readout must lie within 0.05 of the R128 epoch-5 readout (0.90 / 0.81). Otherwise
+  every job stops.
+
+**Known limits:**
+- One recipe.
+- The vanilla was trained with our recipe, not UMU's.
+- The dc sets change with the vanilla (R128: 78 forget facts), so absolute numbers are not comparable with the
+  epoch-4 set.
+
+**Sizing:**
+- Training: about 25 minutes per seed, so seeds 0 and 1 in parallel, then seed 2: about 55 minutes on 2 GPUs.
+- Convergence: about 10 minutes, on idle GPUs while the seeds train.
+- Per seed afterwards: core3, transfer and depth, about 10 minutes.
+- In total about 1–1.3 hours.
+- Orchestrator status log: `logs/dev035/orchestrate.txt`.
+
+**Outcome** (2026-11-23, 15:39–16:37 UTC; code as hashed in `logs/dev035/launch.txt`, uncommitted; GPUs 0, 4–7).
+- **Merge check:** passed. Step 0 reads forget 0.90 / 0.80 against the vanilla's 0.90 / 0.81.
+- **Doubly-correct facts:** 77 forget, 143 retain.
+- **Selection:** every seed qualified at lr 2e-4; the gate-1 checkpoint is step 190 in all three.
+- **Checks:** hook, self-patch and keep = 1 / keep = 0 checks are 0.00, with one exception:
+  - core3 on seed 0 aborted at its first attempt (GPU 0): keep = 1 differed from θu by 0.28 nats, above the 0.05
+    tolerance.
+  - A rerun of the same command on GPU 5 gave 0.00 and completed (`core3_…_s0_r128_rerun.log`). The reported numbers
+    are from the rerun.
+  - Likely cause: a one-step bf16 rounding difference, which is about 0.25 nats at this depth of forgetting
+    (F ≈ 27 nats). Not reproduced.
+- **Code edits during the run:** `vlmu/train.py` and `scripts/unlearn_umu.py` were edited at 16:04 UTC for DEV-036
+  (new step functions only). Seed 2's process had started at 16:03:51 and logged at 16:03:58, so all three seeds ran
+  the hashed code.
+- **Outputs:** `runs/qwen2vl7b/umu_unlearn/umu_npo_rt_txt_lr2e-04_s{0,1,2}_r128`;
+  `results/qwen2vl7b/mech_umu/<run>/step190/{core3,name_depth_split22,convergence_transfer}`;
+  `…/umu_npo_rt_txt_lr2e-04_s0_r128/step0/convergence/summary_first.json`.
+
+**Convergence on the r128 θ0** (141 of 141 pairs kept; swap share):
+
+| layer | 0–12 | 14 | 16 | 18 | 20 | 22 | 24 | 27 |
+|---|---|---|---|---|---|---|---|---|
+| X1 face(A) → name(B) | 0.00 | 0.02 | 0.02 | 0.02 | 0.16 | **0.77** | 0.95 | 1.00 |
+| X2 name(A) → face(B) | 0.00 | 0.04 | 0.04 | 0.06 | 0.19 | **0.81** | 0.89 | 1.00 |
+| W1 / W2 | 0.00 | 0.04 / 0.02 | 0.04 / 0.02 | 0.06 / 0.03 | 0.21 / 0.12 | **0.79 / 0.77** | 0.91 / 0.94 | 1.00 |
+| S1 / S2 (keep B) | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| image tokens of A → F(B) | 1.00 | 0.96 | 0.95 | 0.95 | **0.85** | 0.11 | 0.01 | 0.00 |
+
+**Convergence supported; L\* = 22** (X1, X2, W1 and W2 alike), and image-token L_c = 20. These are the same layers as
+on the epoch-4 vanilla. The image swap now reaches 1.00 at layer 0 (0.89 before): the face route carries the person.
+
+**Readout and tests per seed** (selected step 190; F in nats on the first answer token):
+
+| | seed 0 | seed 1 | seed 2 |
+|---|---|---|---|
+| forget dc txt / img / txt+img | 0.01 / 0.92 / 0.32 | 0.06 / 0.97 / 0.25 | 0.00 / 0.99 / 0.09 |
+| G; unseen retain dc txt / img | +0.91; 0.92 / 0.97 | +0.91; 0.97 / 0.98 | +0.99; 0.90 / 0.97 |
+| F(T); T + name-off; T + control-off | 27.47; 0.46; 27.48 | 12.99; 0.08; 12.85 | 14.20; 0.05; 14.24 |
+| F(NB), blank image | 27.29 | 13.04 | 14.23 |
+| F(NP) visible; knockout; knockout + name-off | 21.44; 27.42; 0.47 | 10.59; 13.15; 0.09 | 12.54; 14.27; 0.05 |
+| θu top-1: T / NP visible (θ0: 1.00) | 0.00 / 0.03 | 0.17 / 0.23 | 0.01 / 0.08 |
+| R_pre_name / R_post_name | 0.98 / 0.00 | 0.99 / 0.00 | 1.00 / 0.00 |
+| R_pre_all / R_post_all | 1.00 / 0.29 | 1.00 / 0.23 | 1.00 / 0.13 |
+| F(NI), portrait-only; top-1 θu / θ0 | 0.01; 1.00 / 1.00 | 0.00; 1.00 / 1.00 | 0.00; 1.00 / 1.00 |
+| peak window of R_name | L4–7 (0.49) | L8–11 (0.25) | L4–7 (0.32) |
+
+**Transfer** (name-route suffix states copied into the face route; 77 facts; |S_0| ≤ 0.002 at every layer):
+
+| layer | ≤ 10 | 12 | 14 | 16 | 18 | 20 | 22 | 27 |
+|---|---|---|---|---|---|---|---|---|
+| S_u summed, seed 0 | ≤ 0.01 | 0.10 | 0.23 | 0.24 | 0.37 | 0.56 | 0.60 | 0.60 |
+| S_u summed, seed 1 | 0.00 | 0.04 | 0.12 | 0.14 | 0.25 | 0.54 | 0.60 | 0.62 |
+| S_u summed, seed 2 | ≤ 0.02 | 0.31 | 0.41 | 0.41 | 0.37 | 0.37 | 0.38 | 0.38 |
+| top-1 patched, seed 0 (name route 0.00) | ≥ 0.96 | 0.71 | 0.43 | 0.38 | 0.18 | 0.00 | 0.00 | 0.00 |
+| top-1 patched, seed 1 (name route 0.17) | ≥ 0.97 | 0.87 | 0.61 | 0.56 | 0.42 | 0.19 | 0.17 | 0.17 |
+| top-1 patched, seed 2 (name route 0.01) | ≥ 0.87 | 0.18 | 0.05 | 0.05 | 0.05 | 0.03 | 0.01 | 0.01 |
+
+**Verdicts, as pre-registered:**
+- **Convergence:** supported.
+- **Q1, the leak:** met in every seed (img 0.92–0.99).
+- **The rescue question:** **unresolved** by the rule.
+  - No seed reaches 0.85 (0.32 / 0.25 / 0.09).
+  - Only seed 0 lies within ±0.10 of its epoch-4 value.
+- **Q2:** met as defined, but uninformative, because NP visible already forgets.
+- **Q3:** met in every seed (name-off leaves 0.4–1.7% of F; control-off none).
+- **Link 6:** 6a fails in every seed (NP visible 10.6–21.4 nats); 6b and 6c hold.
+- **Before the merge (DEV-033):** met in every seed, including (c). N1 is met.
+- **Link 5: fails in every seed** as written.
+  - Seeds 0 and 1 reach 0.60 and 0.62, but S_u is already 0.23 and 0.12 at L14 (allowed: ≤ 0.1 up to L16).
+  - Seed 2 plateaus at 0.41 (< 0.5), and is at 0.31 by L12.
+
+**Reading (exploratory, formed after seeing these data):**
+- **The core account holds on a vanilla that knows the faces.**
+  - The edit sits on the name tokens before the merge.
+  - The portrait-only question does not trigger it (0.00–0.01 nats; img 0.92–0.99 against txt 0.00–0.06).
+  - The leak is larger than on any earlier checkpoint (G +0.91 to +0.99).
+- **The missing rescue is not due to a weak face route.**
+  - The r128 vanilla answers 0.98 by portrait, and the image swap is 1.00.
+  - Yet name + portrait is forgotten almost as much as the name alone (0.09–0.32).
+  - So this is a model difference from LLaVA: in Qwen the name edit wins whenever the name is in the question. The
+    rule's "unresolved" comes from the forgetting being much deeper here, not from any sign of a rescue.
+- **The blank image does not escape at all** (F(NB) = F(T) in every seed), as on the epoch-4 vanilla.
+- **Link 5 holds behaviourally but not in its timing.**
+  - Given the name route's suffix states, the face route's top-1 falls to the name route's level in every seed
+    (1.00 → 0.00 / 0.17 / 0.01).
+  - The suppression is already in the question tokens after the name by L12–16, before the identity moves there
+    (L20–22). In seed 2 it is nearly complete at L12.
+  - So in Qwen, with forgetting this deep, the name edit writes a suppression signal into the question stream ahead
+    of the merge. "The suppressed state acts after the merge" is too narrow.
+  - The summed readout saturates at 0.4–0.6 because later answer tokens stay predictable.
+- **Depth:** the name edit peaks in L4–11 again.
+- **Limits:**
+  - One recipe.
+  - The forgetting here is much deeper than on LLaVA (forget dc txt ≤ 0.06 against 0.55–0.67), so the two models are
+    not compared at matched depth.
+  - The selected checkpoints are the deepest qualifying ones.
+
+### DEV-034 — 2026-11-23 — a Qwen vanilla that knows the facts by face: higher LoRA capacity (decided by: user; design by: implementer)
+**Why.** The user asked for a Qwen vanilla with high accuracy both by name and by portrait. Diagnostics run tonight
+on the epoch-4 vanilla (exploratory; scratchpad scripts `noopt_readout.py` and `train_fit.py`):
+
+**Readout without the options line** ("Select answer in …"), i.e. exactly the training prompt:
+
+| | forget txt / img | retain txt / img |
+|---|---|---|
+| Qwen | 0.78 / 0.60 | 0.805 / 0.58 |
+| LLaVA's UMU vanilla | 0.69 / **0.97** | 0.72 / 0.975 |
+
+Qwen's portrait gap is therefore not an effect of the format: Qwen does not know the facts by face.
+
+**Teacher-forced fit on 256 of its own training rows:**
+- All answer tokens argmax-correct: 0.75 for txt, 0.62 for img. Per-token loss 0.08 and 0.17.
+- So the vanilla underfits its own training data, the portrait rows most.
+- Correction to DEV-030: the "loss about 0.04" there was a single logged batch. Batches hold one modality each.
+
+**Reading:** the limit is capacity, not format. LoRA r16 on the LM does not memorise 500 people × 12 facts in two forms;
+with the vision tower added (DEV-031) it gains only +0.04.
+
+**Test.** Two runs as DEV-030 stage 1:
+- same data; readout after each epoch; selection by max min(forget txt, img);
+- 5 epochs; lr 2e-4 with linear decay.
+
+The runs:
+- **R128:** LoRA r128 / α128 on the LM linear layers. The scaling stays 1, as r16/α16.
+  `configs/qwen2vl7b/umu_vanilla_r128.yaml`, run tag `r128`.
+- **VR128:** the same, plus the vision tower and the merger (as DEV-031). `umu_vanilla_vis_r128.yaml`, run tag
+  `vis_r128`.
+
+One GPU each. Each run merges its selected epoch into `models/qwen2vl7b_umu_vanilla_<tag>`.
+
+**Predictions and thresholds,** per run at the selected epoch:
+- **Target met** if forget txt ≥ 0.75 and forget img ≥ 0.75 (LLaVA's vanilla: 0.76 / 0.82).
+- **Capacity helps** if forget img exceeds the best r16 run by ≥ 0.10 at any epoch (0.65 LM-only, 0.69 with the
+  vision tower). **It does not help** if the gain is within 0.05.
+- Reported: retain txt and img; the doubly-correct counts; the no-options readout on the selected epoch.
+
+**What follows.** Nothing starts automatically. If a run meets the target, the user decides whether it replaces the
+epoch-4 vanilla. Replacing it means redoing the Qwen unlearning and the tests of DEV-030, DEV-032 and DEV-033 on it.
+
+**Known limits:**
+- One seed.
+- VR128 changes the rank and the vision side together.
+- The r16 runs used for comparison had 3–5 epochs and different schedules.
+
+**Sizing:** 1500 steps per epoch, 7500 steps per run.
+- R128: about 1.5 s per step (r16 LM-only measured 1.44), so about 3.5 h.
+- VR128: about 2.5–3.5 s per step, so about 5–7 h.
+- Smoke tests first: `--debug`, 4 steps, batch 8, which also checks memory.
+
+**Outcome** (2026-11-23; code as hashed in `logs/dev034/launch.txt`, uncommitted; GPUs 4 and 5; started 05:08 UTC).
+- R128 finished 09:01 UTC (about 1.6–2.0 s per step); VR128 finished 11:32 UTC (about 2.2–3.4 s per step).
+- Smoke tests confirmed r = 128, α = 128.
+- The no-options readouts come from the scratchpad diagnostic, run on the merged models.
+
+| epoch | R128 forget txt / img | R128 retain txt / img | R128 dc f / r | VR128 forget txt / img | VR128 retain txt / img | VR128 dc f / r |
+|---|---|---|---|---|---|---|
+| 1 | 0.71 / 0.59 | 0.675 / 0.605 | 55 / 110 | 0.68 / 0.60 | 0.685 / 0.595 | 51 / 108 |
+| 2 | 0.77 / 0.70 | 0.685 / 0.56 | 66 / 107 | 0.70 / 0.62 | 0.73 / 0.58 | 57 / 109 |
+| 3 | 0.81 / 0.77 | 0.775 / 0.665 | 71 / 125 | 0.82 / 0.76 | 0.835 / 0.685 | 69 / 131 |
+| 4 | 0.84 / 0.76 | 0.79 / 0.76 | 73 / 137 | **0.87 / 0.86** (selected) | 0.87 / 0.79 | 81 / 152 |
+| 5 | **0.90 / 0.81** (selected) | 0.82 / 0.79 | 78 / 145 | 0.92 / 0.86 | 0.91 / 0.855 | 82 / 165 |
+
+Readout on the merged selected epoch, with and without the options line:
+
+| | forget txt / img, options | forget txt / img, no options | retain txt / img, no options |
+|---|---|---|---|
+| R128, epoch 5 | 0.90 / 0.81 | **1.00 / 0.98** | 1.00 / 1.00 |
+| VR128, epoch 4 | 0.88 / 0.86 | 0.96 / 0.82 | 0.97 / 0.845 |
+| r16 epoch-4 vanilla (DEV-030) | 0.76 / 0.67 | 0.78 / 0.60 | 0.805 / 0.58 |
+| LLaVA's UMU vanilla | 0.76 / 0.82 | 0.69 / 0.97 | 0.72 / 0.975 |
+
+The merged models reproduce their epoch readouts within 0.01, so the merge check passes.
+
+**Verdict:**
+- **Target met** by both runs: R128 0.90 / 0.81, VR128 0.87 / 0.86.
+- **Capacity helps.** The best forget img rises by +0.16 for R128 (0.81 vs 0.65) and by +0.17 for VR128 (0.86 vs 0.69).
+  Both gains are ≥ 0.10.
+- **Selection tie in VR128.** Epochs 4 and 5 have the same min (0.86), and the script's `max` keeps the first, epoch 4.
+  The rule does not say how to break ties. Epoch 5 is higher on every other readout.
+
+**Reading (exploratory):**
+- R128 epoch 5 knows the facts the way LLaVA's vanilla does: 0.98 by portrait without options (LLaVA 0.97), and 1.00 by
+  name.
+- With options it scores 0.90 / 0.81 against LLaVA's 0.76 / 0.82.
+- The image tower is unchanged, as in all the earlier Qwen runs. The only change from the epoch-4 vanilla is the LoRA
+  rank and the epochs.
+- VR128 scores higher by portrait with options (0.86). At its selected epoch, it has not memorised the portrait rows
+  (0.82 without options).
+- **The weak Qwen face route of DEV-030/031 was an undertrained vanilla, not a property of Qwen.**
+- Whether this vanilla replaces the epoch-4 one is the user's decision (see "What follows").
+
+### DEV-033 — 2026-11-23 — is the name edit written before the routes merge? A test on checkpoints not yet looked at (decided by: user; design by: implementer)
+**Why.** DEV-032 failed its depth criterion (D1–D3), which was set from LLaVA's "layers 0–3". The reading formed
+afterwards (exploratory) is different: both models write the name edit before their convergence layer (LLaVA L20,
+Qwen L22), only at different depths. That reading came from LLaVA G3 seed 0 and Qwen seed 2. Here it is stated as a
+criterion and tested on name-bound checkpoints whose depth profile has not been looked at.
+
+**Checkpoints:**
+- **Fresh:**
+  - Qwen seed 0 step 300 and seed 1 step 190 (DEV-030; both pass Q3);
+  - LLaVA G3 seed 2 step 300 (name-bound, DEV-021/029).
+- **Excluded:** LLaVA G3 seed 1, which forgets by the response-style switch (DEV-021), not by a name edit.
+- **Seen in DEV-032:** LLaVA G3 seed 0 and Qwen seed 2 are rerun and reported, marked as seen. They are not part of
+  the test.
+
+**Test** (`mech_umu_name_depth.py --split-at L*`, new option; first answer token; forget dc facts; text-only
+question).
+- L* is the model's convergence layer, measured on θ0 and fixed now: LLaVA 20 (DEV-027), Qwen 22 (DEV-032).
+- R_pre_name: LoRA off at the name tokens in layers 0 … L*−1. R_post_name: LoRA off at the name tokens in layers
+  L* … last.
+- R_pre_all and R_post_all: the same, at every position.
+- R = 1 − F(off) / F(T), as in DEV-032.
+
+**Predictions and thresholds,** per checkpoint:
+- (a) R_pre_name ≥ 0.7: switching the name edit off before the merge undoes most of the forgetting.
+- (b) R_post_name ≤ 0.1: switching it off after the merge undoes almost nothing.
+- Verdict per checkpoint:
+  - **"before the merge"** if (a) and (b);
+  - **"not before the merge"** if R_pre_name < 0.5 or R_post_name > 0.2;
+  - otherwise partial.
+- **The reading holds** if all three fresh checkpoints are "before the merge". **It fails** if any one is "not".
+- Secondary, with its own threshold: (c) R_post_all ≤ 0.3, the LoRA after the merge at any position.
+  - In DEV-032, Qwen s2's late windows gave 0.18–0.19 at non-name positions. So (c) may fail without contradicting
+    (a) and (b); it is reported as a separate component.
+- Also reported: θu's top-1 under each switch-off, and F on the portrait-only question (N1 of DEV-032, on more
+  checkpoints).
+
+**Validity checks:** as DEV-032 (keep = 1 and keep = 0 exact; name tokens in every row; LoRA modules in decoder
+layers).
+
+**Known limits:**
+- L* comes from θ0, from one readout, measured every 2 layers.
+- Three fresh checkpoints, two of them from one model.
+- The 0.7 threshold was chosen after seeing name-off-in-all-layers recoveries of 0.87 (LLaVA s0), 0.99 (Qwen s2) and
+  0.84 (LLaVA s2, DEV-029). The per-layer split of these checkpoints has not been seen.
+
+**Sizing:** 5 checkpoints, about 60 facts and 20 forward passes each; 1–2 minutes per checkpoint, one GPU each.
+
+**Outcome** (2026-11-23, about 05:05 UTC; code as hashed in `logs/dev033/launch.txt`, uncommitted; GPUs 0, 4–7; all
+exit 0).
+- **Checks:** 0.00 on every checkpoint.
+- **Outputs:** `.../mech_umu/<run>/step<N>/name_depth_split<L*>/`.
+- **Figures:** `proposal/figures/name_depth_split_{Qwen_s0_step300,Qwen_s1_step190,G3s2_step300}.png`.
+- **Consistency:** on the two seen checkpoints the window values reproduce DEV-032 exactly.
+
+| checkpoint | F(T) nats; top-1 θu / θ0 | R_pre_name (top-1) | R_post_name (top-1) | R_pre_all | R_post_all | verdict |
+|---|---|---|---|---|---|---|
+| **Qwen s0 step 300** (fresh) | 16.43; 0.06 / 0.95 | **0.99** (0.94) | **0.00** (0.05) | 1.00 | 0.42 | before the merge; (c) fails |
+| **Qwen s1 step 190** (fresh) | 7.39; 0.40 / 0.95 | **0.99** (0.95) | **0.01** (0.40) | 0.99 | 0.09 | before the merge |
+| **LLaVA G3 s2 step 300** (fresh) | 5.33; 0.58 / 0.88 | **0.83** (0.82) | **0.03** (0.58) | 0.95 | 0.19 | before the merge |
+| Qwen s2 step 266 (seen) | 11.46; 0.24 / 0.95 | 0.99 (0.94) | 0.01 (0.24) | 0.99 | 0.30 | before the merge |
+| LLaVA G3 s0 step 300 (seen) | 7.66; 0.38 / 0.88 | 0.85 (0.74) | 0.03 (0.38) | 0.97 | 0.14 | before the merge |
+
+Peak window of R_name (descriptive):
+
+| checkpoint | peak window (R_name) | R_name from L20 on |
+|---|---|---|
+| Qwen s0 | L8–11 (0.55), then L12–15 (0.40) | ≤ 0.01 |
+| Qwen s1 | spread over L0–11 (0.17–0.24) | ≤ 0.01 |
+| Qwen s2 | L4–7 (0.40) | ≤ 0.02 |
+| LLaVA s2 | L0–3 (0.42) | ≤ 0.01 |
+| LLaVA s0 | L0–3 (0.36) | ≤ 0.02 |
+
+The portrait-only question does not trigger the edit on any of the five: F(NI) −0.04 to 0.07 nats, and θu's top-1 is
+within 0.08 of θ0's.
+
+**Verdict: the reading holds.**
+- All three fresh checkpoints are "before the merge": (a) 0.83–0.99 ≥ 0.7, (b) 0.00–0.03 ≤ 0.1.
+- Secondary (c) fails on Qwen s0: R_post_all = 0.42 > 0.3.
+
+**Reading (exploratory):**
+- **The common account.** In five name-bound checkpoints of two model families, the forgetting is written on the name
+  tokens before the layer where the name and face routes merge.
+  - Switching the name edit off before L* restores the answer; θu's top-1 returns to 0.82–0.95, against θ0's
+    0.88–0.95.
+  - Switching it off after L* changes nothing.
+- **The exact depth is not common.**
+  - LLaVA: layers 0–3 in both seeds.
+  - Qwen: varies by seed (L4–7, L8–15, or spread over L0–11).
+  - So "layers 0–3" (DEV-020) describes LLaVA, not the mechanism.
+- **The LoRA after L* is not independent of the name edit.**
+  - Qwen s0: switching off the pre-L* LoRA alone removes all the forgetting (R_pre_all 1.00). The post-L* LoRA, at
+    non-name positions, still accounts for 0.42 of the log-p effect.
+  - So the late LoRA amplifies a signal that starts with the name edit, and does nothing without it.
+  - Its behavioural weight is small: top-1 0.06 → 0.11 when it is switched off.
+- **Limits:**
+  - L* is measured once per model, on θ0.
+  - The 0.7 threshold was set after seeing the all-layer name-off values (see Known limits).
+  - Qwen's three seeds share one vanilla, which was accepted post hoc.
+
+### DEV-032 — 2026-11-23 — does the LLaVA mechanism carry over to Qwen? The missing links on one representative Qwen checkpoint (decided by: user; design by: implementer)
+**Why.** DEV-030 tested three links of the chain on Qwen: the leak, the knockout and the name localisation. Link 6a
+failed there. The user asked whether the mechanism found on LLaVA carries over, first on one representative unlearned
+Qwen.
+
+**Checkpoint:** Qwen seed 2, step 266 (`umu_npo_rt_txt_lr2e-04_s2`, on the epoch-4 vanilla).
+- Rule: of the three seeds, the one closest to the across-seed median on forget dc txt, img, txt+img and G (summed
+  absolute distance: seed 0 0.48, seed 1 0.12, seed 2 0.04).
+- LLaVA reference: G3 seed 0 step 300, through the same scripts where a readout is new.
+
+**The chain, link by link:**
+
+| link | LLaVA G3 | Qwen so far | here |
+|---|---|---|---|
+| 1 the edit sits on the name tokens | LoRA off there restores 0.98 (DEV-020) | 98–99% (DEV-030 Q3) | — |
+| 1b in the first layers | LoRA off in L0–3 restores 0.75 (generation) | not tested | (A) |
+| 2 the portrait-only question does not trigger it | 0.01 nats (DEV-020) | generation leaks (0.92); nats not measured | (A) |
+| 3 the portrait is a separate route | knockout (DEV-021/029) | Q2 met (DEV-030) | — |
+| 4 the routes converge in the question tokens | L* = 20 of 32; image tokens stop mattering after L18 (DEV-027) | not tested | (B) |
+| 5 suppressed name-route states suppress the face route | S rises from L16, plateau 0.60 (DEV-024) | not tested | (C) |
+| 6 with name + portrait, the face overrides the edit | closed (DEV-029) | 6a fails (DEV-030) | — |
+
+**Tests** (eval only; first answer token unless stated):
+- **(A)** `scripts/mech_umu_name_depth.py` (new, model-agnostic), on the forget dc facts. On the text-only question:
+  - F with the LoRA off in one 4-layer window, at every position (R_all) or at the name tokens only (R_name);
+  - recovery R = 1 − F(off) / F(T).
+
+  It also measures F on the portrait-only question NI: the portrait, with the name replaced by "this person".
+  The script runs on Qwen seed 2 and on LLaVA G3 seed 0.
+- **(B)** `mech_umu_convergence.py --part mapfirst` and `--part imageswap` on Qwen θ0, with `--dc-run
+  umu_npo_rt_txt_lr2e-04_s2` (Qwen's own 62 + 118 dc facts).
+  - DEV-027's pairs, conditions, readout and rules are unchanged.
+  - Layers 0, 2, …, 26, 27.
+- **(C)** `--part unlearned` on Qwen seed 2 step 266.
+  - S(L) as in DEV-024, on the summed answer log p.
+  - New, reported only: the first-token version and the top-1 of the correct first token.
+- **Code changes in `mech_umu_convergence.py`:**
+  - For non-LLaVA families, prompts come from `adapter.prompt`. The LLaVA strings are unchanged.
+  - New `--dc-run` option.
+  - The image token id now comes from `lm_parts`.
+  - The transfer part also records first-token log p and top-1.
+  - `--report-first` adds the transfer summary for these items.
+
+**Predictions and thresholds:**
+- **(A) depth:**
+  - D1: R_all(L0–3) ≥ 0.5.
+  - D2: R_all ≤ 0.3 in every window starting at layer ≥ 12.
+  - D3: R_name(L0–3) ≥ 0.5.
+
+  "Early name edit" if D1–D3 hold. "Not early" if R_all(L0–3) < 0.3 and R_name(L0–3) < 0.3. Otherwise partial.
+  - Link 1b carries over only if LLaVA G3 seed 0 and Qwen get the same verdict.
+  - If LLaVA is not "early name edit" on this first-token readout, the depth result is reported descriptively.
+- **(A) N1, link 2:** F(NI) ≤ 1.0 nat, and θu's top-1 on NI ≥ θ0's − 0.1.
+- **(B), link 4:** DEV-027's validity and verdict rules.
+  - Expectation, no verdict: L* at a relative depth like LLaVA's (20 of 32, i.e. about layers 16–20 of Qwen's 28).
+    Image-token L_c ≤ L*_X2 + 2.
+- **(C), link 5,** on the summed readout. It holds if all three are true:
+  - S_u(L) ≥ 0.5 at some layer;
+  - S_u ≤ 0.1 at every layer ≤ L* − 6 (it rises with the convergence, not before);
+  - |S_0| ≤ 0.1 at every layer.
+
+  LLaVA seed 0 meets all three: max 0.60; ≤ 0.04 up to L14; θ0 ≤ 0.03. If (B) gives no L*, (C) is descriptive.
+- **Overall: "the mechanism carries over to Qwen"** if 1b, 2, 4 and 5 hold; 1 and 3 already do. Link 6 is known to
+  differ.
+
+**Validity checks** (the scripts abort otherwise):
+- (A):
+  - keep = 1 on every LoRA module reproduces θu, and keep = 0 reproduces θ0 (≤ 0.05 nats);
+  - every row has ≥ 1 name token;
+  - every LoRA module sits in a decoder layer.
+- (B, C): the self-patch check and the image-swap self check (≤ 0.05 nats) on the first batch.
+
+**Known limits:**
+- One Qwen checkpoint.
+- The Qwen vanilla was accepted post hoc, and its portrait route is weaker (0.65 vs about 0.81).
+- The windows and thresholds were set on LLaVA (32 layers); Qwen has 28.
+- First-token readout; each model has its own dc facts.
+- Qwen's template puts the image directly before the question; the wording "this person" is ours.
+
+**Sizing:**
+- (A): about 18 forward passes per fact, 1–3 minutes per model.
+- (B): about 120 pairs × 15 layers, in 4 jobs (X1/W1, X2/W2, S1/S2, image swap), about 5–15 minutes each.
+- (C): about 5 minutes.
+- In total about 15 minutes of wall-clock on the idle GPUs, one job each.
+- Smoke tests (`--debug` / `--max-pairs 4`) run first, and their outputs are deleted before the full runs.
+
+**Outcome, Qwen seed 2 step 266** (2026-11-23, 04:38–04:49 UTC; code as hashed in `logs/dev032/launch.txt`,
+uncommitted; GPUs 0, 4, 5, 6, 7; all jobs exit 0).
+- **Checks:** all 0.00 (self-patch, image-swap self check, keep = 1 / keep = 0). Every row has 2–6 name tokens.
+- **Smoke tests:** run with `--max-facts 8` instead of `--debug`, which switches to the debug data root. On 8 facts
+  they already showed the Qwen depth pattern below. Their outputs were deleted before the full runs.
+- **Outputs:**
+  - (A): `results/qwen2vl7b/mech_umu/umu_npo_rt_txt_lr2e-04_s2/step266/name_depth/` and
+    `results/llava/mech_umu/umu_npo_rt_txt_lr2e-04_s0_gate_rw5n200/step300/name_depth/`;
+  - (B): `results/qwen2vl7b/mech_umu/umu_npo_rt_txt_lr2e-04_s2/step0/convergence/` (`summary_first.json`);
+  - (C): `.../step266/convergence_transfer/`.
+- **Figures:** `proposal/figures/name_depth_Qwen_s2_step266.png`, `name_depth_G3_step300.png`,
+  `convergence_first_qwen_theta0.png`.
+
+**(A) Depth.** Recovery R on the first answer token (1 = all forgetting removed).
+
+| LoRA off in | LLaVA G3 s0: R_all / R_name | Qwen s2: R_all / R_name |
+|---|---|---|
+| L0–3 | **0.48 / 0.36** | 0.12 / 0.11 |
+| L4–7 | 0.19 / 0.16 | **0.41 / 0.40** |
+| L8–11 | 0.11 / 0.09 | 0.31 / 0.27 |
+| L12–15 | 0.11 / 0.07 | 0.25 / 0.18 |
+| L16–19 | 0.09 / 0.03 | 0.25 / 0.13 |
+| L20–23 | 0.07 / 0.02 | 0.18 / 0.02 |
+| L24–27 | 0.03 / 0.01 | 0.19 / 0.00 |
+| L28–31 | 0.03 / 0.00 | — |
+| name tokens, all layers | 0.87 | 0.99 |
+| LoRA kept only at the name tokens | 0.42 | 0.45 |
+
+Readouts behind R:
+
+| | LLaVA G3 s0 | Qwen s2 |
+|---|---|---|
+| F(T); top-1 θu / θ0 | 7.66 nats; 0.38 / 0.88 | 11.46 nats; 0.24 / 0.95 |
+| F(NI); top-1 θu / θ0 | 0.01 nats; 0.98 / 1.00 | −0.04 nats; 0.89 / 0.90 |
+
+Top-1 of θu with one window off moves little: at most 0.45 (LLaVA, L0–3) and 0.35 (Qwen, L4–7). With the name
+tokens off in all layers it reaches 0.74 and 0.94.
+
+**Verdict (A):**
+- LLaVA is **partial**: D1 fails (0.48 < 0.5), D3 fails (0.36), D2 holds. As pre-registered, the depth comparison
+  (link 1b) is therefore descriptive.
+- Qwen is **"not early"** (0.12 / 0.11 < 0.3); D2 holds.
+- **N1 holds in both models (link 2):** the portrait-only question does not trigger the edit.
+
+**(B) Convergence, Qwen θ0.** 151 pairs, 101 with different first answer tokens, 95 kept.
+
+| layer | 0–12 | 14 | 16 | 18 | 20 | 22 | 24 | 27 |
+|---|---|---|---|---|---|---|---|---|
+| X1 face(A) → name(B) | ≤ 0.01 | 0.03 | 0.03 | 0.04 | 0.24 | **0.76** | 0.88 | 0.91 |
+| X2 name(A) → face(B) | 0.00 | 0.02 | 0.03 | 0.09 | 0.42 | **0.95** | 0.97 | 0.97 |
+| W1 name(A) → name(B) | ≤ 0.02 | 0.07 | 0.08 | 0.14 | 0.38 | **0.86** | 0.97 | 0.97 |
+| W2 face(A) → face(B) | 0.00 | 0.01 | 0.02 | 0.04 | 0.22 | **0.83** | 0.89 | 0.91 |
+| S1 / S2 (keep B) | ≥ 0.99 | ≥ 0.99 | 1.00 | ≥ 0.99 | ≥ 0.99 | 1.00 | 1.00 | 1.00 |
+| image tokens of A → F(B) | 0.89 | 0.84 | 0.85 | 0.81 | **0.60** | 0.09 | 0.00 | 0.00 |
+
+**Verdict (B): convergence supported (link 4).**
+- Validity: W1 max 0.99, W2 max 0.91; S1 and S2 ≥ 0.99 at every layer.
+- L* = 22 for X1, X2, W1 and W2 alike; X1 reaches 0.91 and X2 0.97.
+- The expectation on depth is not met. L* = 22 of 28 (relative depth 0.79) is later than LLaVA's 20 of 32 (0.63),
+  and outside the expected layers 16–20.
+- Image-token L_c = 20 ≤ L*_X2 + 2.
+- Even at L0 the image swap reaches only 0.89 (LLaVA 1.00). Qwen's face route does not always carry the person.
+
+**(C) Transfer, Qwen s2 step 266** (62 facts; θu's route gap 18.78 nats summed, 11.10 on the first token).
+
+| layer | ≤ 12 | 14 | 16 | 18 | 20 | 22 | 24 | 27 |
+|---|---|---|---|---|---|---|---|---|
+| S_u, summed | ≤ 0.01 | 0.04 | 0.04 | 0.07 | 0.28 | **0.54** | 0.58 | 0.59 |
+| S_0, summed (control) | 0.00 | 0.00 | 0.00 | 0.00 | −0.01 | −0.02 | −0.02 | −0.02 |
+| S_u, first token | ≤ 0.01 | 0.05 | 0.06 | 0.10 | 0.45 | 0.90 | 0.98 | 1.00 |
+| top-1 θu, patched face route | 0.85–0.89 | 0.76 | 0.73 | 0.65 | 0.40 | **0.24** | 0.24 | 0.24 |
+
+Unpatched, θu's top-1 is 0.89 on the face route and 0.24 on the name route. LLaVA G3 s0 (DEV-024, summed): ≤ 0.04
+up to L14, 0.21 at L16, 0.48 at L20, 0.56 at L22, plateau 0.60.
+
+**Verdict (C): link 5 holds.** Max S_u = 0.59 ≥ 0.5; S_u ≤ 0.04 at every layer ≤ L* − 6 = 16; |S_0| ≤ 0.02.
+
+**Overall, as pre-registered:** links 2, 4 and 5 hold on Qwen, and 1 and 3 held already (DEV-030). Link 1b is not
+established. On this readout LLaVA is only partial, and Qwen's edit is not in layers 0–3. So the overall criterion
+("1b, 2, 4 and 5 hold") is **not met as written**. Link 6 differs, as known.
+
+**Reading (exploratory, formed after seeing these data):**
+- **What carries over.** In both models:
+  - the text-only edit is bound to the name tokens (LoRA off there removes 87% / 99% of the forgetting);
+  - the portrait-only question does not trigger it;
+  - the name and face routes merge in the question tokens at one depth (LLaVA L20, Qwen L22);
+  - after that depth, the name route's suppressed states also suppress the face route (plateau 0.60 / 0.59). In
+    Qwen, the face route's top-1 then drops exactly to the name route's (0.89 → 0.24 from L22).
+  - The account "the edit sits on the name, before the routes merge, so the face reaches the merged representation
+    without passing it" holds in both.
+- **What does not.**
+  - The depth of the edit: LLaVA L0–3; Qwen L4–11, with a tail up to L19.
+  - In Qwen the single windows add up to 1.71: several layers each suffice in part.
+  - "Layers 0–3" is a LLaVA detail. "Before the convergence" holds in both: in Qwen, R_name is ≈ 0 from L20.
+- **The transfer tracks each model's convergence.** S_u rises at L16–22 in LLaVA (L* 20) and at L20–22 in Qwen
+  (L* 22).
+- **Qwen-specific.** The face route is weaker: image swap 0.89 at L0, and θ0's face-route top-1 0.83 in S2. This
+  fits link 6a failing (DEV-030). With name + portrait, the face does not override the name edit.
+- In Qwen, LoRA in L20–27 at non-name positions still accounts for about 0.2 (R_all 0.18–0.19, R_name ≈ 0). This
+  part is not localised here.
+- **Limits:** one Qwen checkpoint; first-token readout; single-window recoveries are small in top-1.
+
+### DEV-031 — 2026-11-23 — Qwen vanilla with LoRA on the vision side too (decided by: user; design by: implementer)
+**Why.** DEV-030's Qwen vanilla answers by portrait much worse than by name: 0.62–0.65 vs 0.70–0.79 over 5 epochs.
+LLaVA's UMU vanilla is the other way round (0.80 vs 0.71).
+- Exploratory diagnosis from the saved readouts: Qwen's portrait errors are mostly near misses (162 → 168 cm), not
+  another person's answer (28%, as for the name route's 25%). The face → facts link is weak, not the identification
+  of a wrong person.
+- One recipe difference: UMU's script puts LoRA on all linear layers, the vision tower included; DEV-030 put LoRA on
+  the LM only.
+
+**Test** (`configs/qwen2vl7b/umu_vanilla_vis.yaml`, run tag `vis`).
+- As DEV-030 stage 1 (same data, schedule, lr 2e-4, 3 epochs, readout per epoch), with LoRA also on every linear
+  layer of the vision tower and the merger: 130 modules.
+- Separate run dir and merged model: `runs/qwen2vl7b/umu_vanilla_vis`, `models/qwen2vl7b_umu_vanilla_vis`.
+
+**Predictions and thresholds** (epoch 1, against DEV-030's epoch 1 at 0.62):
+- Forget img ≥ 0.72: the vision-side LoRA helps.
+- ≤ 0.66: it does not.
+- Otherwise partial.
+
+The run continues to 3 epochs only if epoch 1 is not "does not help". The selection and acceptance rule of DEV-030
+(both ≥ 0.70) applies.
+
+**If accepted:** the Qwen unlearning (DEV-030 stages 2–3) is redone on this vanilla, with the unlearning LoRA still on
+the LM only, as for LLaVA. The results on the epoch-4 vanilla stay as a preliminary set.
+
+**Known limits:** one seed; vision LoRA changes the image features themselves, which the LLaVA vanilla also had.
+
+**Outcome, epoch 1** (2026-11-23; code as hashed in `logs/dev031/launch.txt`, uncommitted; GPU 5; about 2.2–3.6 s
+per step; 130 vision/merger + 196 LM LoRA modules).
+
+| epoch 1 | forget txt / img | retain txt / img | doubly-correct forget / retain |
+|---|---|---|---|
+| vision + LM LoRA | 0.69 / **0.66** | 0.63 / 0.55 | 57 / 94 |
+| LM-only LoRA (DEV-030) | 0.70 / 0.62 | 0.66 / 0.56 | 53 / 96 |
+
+**Verdict: the vision-side LoRA does not help** (0.66 ≤ 0.66). Retain img is unchanged (0.55 vs 0.56). As
+pre-registered, the run was stopped after the epoch-1 readout, and the epoch-4 LM-only vanilla stays the Qwen
+vanilla.
+
+**Reading (exploratory):** adapting the image features does not strengthen Qwen's face → facts route at this stage of
+training. The remaining candidates are input resolution (256 visual tokens) and properties of the model itself.
+Neither is tested.
+
+**Deviation: continued after the stop rule** (2026-11-23, 01:40 UTC, decided by the user after seeing epoch 1).
+- Epoch 1 sits at the threshold (0.66, +0.04 over the LM-only run).
+- The run resumes from its step-1500 state for epochs 2 and 3, with the same schedule.
+- The stop rule was not followed. Any gain at epochs 2–3 is reported against DEV-030's epochs 2–3 (img 0.64 / 0.63),
+  and the vanilla choice for Qwen is made afterwards with the user.
+
+**Outcome, epoch 2, and the rule for stages 2–3** (2026-11-23, 03:25 UTC; written before the epoch-3 readout).
+
+| epoch 2 | forget txt / img | retain txt / img | doubly-correct forget / retain |
+|---|---|---|---|
+| vision + LM LoRA | 0.78 / **0.68** | 0.67 / 0.58 | 66 / 103 |
+| LM-only LoRA (DEV-030) | 0.77 / 0.64 | 0.685 / 0.565 | 59 / 98 |
+
+- Paired per question (exploratory): on forget img, 10 questions are right only with the vision LoRA and 6 only
+  without it (sign test p = 0.45; epoch 1: 6 vs 2, p = 0.29). Retain img: 14 vs 11 (epoch 1: 12 vs 13). Txt: no
+  difference.
+- The gain on the portrait route is consistent in direction but not significant. Epoch 2 (0.68) is above every
+  LM-only epoch (0.61–0.65) and below the 0.70 bar.
+
+**Decision (user, 03:20 UTC):** if the run is accepted under DEV-030's unchanged rule after epoch 3, stages 2–3
+start automatically on this vanilla, as this entry pre-registered ("If accepted"). Otherwise nothing starts, and the
+epoch-4 LM-only vanilla stays the Qwen vanilla.
+- The rule: the epoch with the highest min(forget txt, forget img), both ≥ 0.70. Only epoch 3 can now meet it.
+- Stages 2–3 as DEV-030: lr 2e-4; seeds 0 and 1 together, then seed 2; the same lr fallback; the gate-1 selection;
+  core3 with `model.attn=eager`. The unlearning LoRA is on the LM only.
+- Run tag `vis`: `runs/qwen2vl7b/umu_unlearn/umu_npo_rt_txt_lr2e-04_s{0,1,2}_vis`. Training on 2 GPUs, core3 on a
+  free GPU. Status log: `logs/dev031/orchestrate.txt`.
+- **Merge check (aborts all jobs if it fails):** seed 0's step-0 readout of the merged model must be within 0.05 of
+  the selected epoch's readout on forget txt and forget img. On the epoch-4 LM-only vanilla the difference was
+  0.00 / +0.01.
+
+**What stages 2–3 can tell** (pre-registered). The question left open by DEV-030 is whether Qwen's missing rescue (name
++ portrait does not undo the forgetting; NB ≈ T) comes from the weak face route of the epoch-4 vanilla.
+- Compare forget dc txt+img per seed with the epoch-4 runs (0.40 / 0.68 / 0.56).
+- **≥ 0.85 in at least 2 of 3 seeds:** the face route's strength explains the missing rescue.
+- **Every seed within ±0.10 of its epoch-4 value:** not explained by the face route at this strength.
+- Otherwise unresolved.
+- Q1–Q3 are read with DEV-030's criteria.
+
+**Known limit:** the portrait route improves only a little (about 0.65 → 0.70), so this is a weak test of the
+"undertrained vanilla" explanation.
+
+**Outcome, epochs 2–3** (2026-11-23, 04:21 UTC; code unchanged from `logs/dev031/launch.txt`, same hashes; GPU 5).
+
+| epoch | forget txt / img | retain txt / img | doubly-correct forget / retain |
+|---|---|---|---|
+| vision + LM, 1 | 0.69 / 0.66 | 0.63 / 0.55 | 57 / 94 |
+| vision + LM, 2 | 0.78 / 0.68 | 0.67 / 0.58 | 66 / 103 |
+| vision + LM, 3 | 0.75 / **0.69** | 0.655 / 0.61 | 59 / 100 |
+| LM-only (DEV-030), 3 | 0.77 / 0.63 | 0.715 / 0.60 | 61 / 108 |
+| LM-only (DEV-030), 4 (the Qwen vanilla in use) | 0.76 / 0.65 | 0.76 / 0.61 | 61 / 118 |
+
+- Selected: epoch 3 (min 0.69). **Not accepted** (0.69 < 0.70). As set above, stages 2–3 did not start, and **the
+  epoch-4 LM-only vanilla stays the Qwen vanilla**. DEV-030's stage 2–3 results stand (no longer preliminary on this
+  account).
+- The script still merged epoch 3 into `models/qwen2vl7b_umu_vanilla_vis` (16 GB). Nothing uses it.
+
+Paired per question, vision epoch 3 against LM-only (sign test):
+
+| against | forget img | forget txt | retain img | retain txt |
+|---|---|---|---|---|
+| LM-only epoch 3 | 9 vs 3 (p = 0.15) | 6 vs 8 | 11 vs 9 | 6 vs 18 (p = 0.02) |
+| LM-only epoch 4 | 10 vs 6 (p = 0.45) | 6 vs 7 | 13 vs 13 | 9 vs 30 (p = 0.001) |
+
+**Reading (exploratory):**
+- The vision-side LoRA raises the portrait route by about 0.04–0.06 at every epoch. This is consistent in direction
+  but not significant per question. It does not reach the bar.
+- Retain by name is worse (0.655 vs 0.76 for the vanilla in use). The vision vanilla also has fewer doubly-correct
+  facts (59 / 100 vs 61 / 118).
+- So the LM-only vanilla stays the better start model on the criteria that matter for the unlearning readout, not
+  only by the 0.70 bar.
+- Qwen's weak face → facts route is not fixed by adapting the image features. Whether the missing rescue (DEV-030) is
+  a property of Qwen or of the vanilla stays open.
+
 ### DEV-030 — 2026-11-22 — second model family: Qwen2-VL-7B-Instruct on UMU (decided by: user; design by: implementer)
 The paper needs the core findings on a second model family. The user chose to start now. Qwen2-VL-7B-Instruct is
 used: the repo has its adapter, and Nikankin et al. and Cohen et al. study it.
@@ -1376,6 +2130,81 @@ run), run on Qwen before stage 3.
   accepted. If seed 0 has no qualifying checkpoint, seed 0 is rerun at lr 1e-4, then at 4e-4. Seed 2 starts with
   the first lr at which seed 0 qualifies. Each selected checkpoint goes to stage 3 automatically.
 - Automation: a scratchpad orchestrator; its status log is `logs/dev030/orchestrate.txt`.
+
+**Amendment before the epoch-3 readout** (2026-11-22, decided by the user after seeing epochs 1–2).
+- Readouts so far, forget txt / img: epoch 1 0.700 / 0.620 (53 dc forget facts); epoch 2 0.770 / 0.640 (59).
+  LLaVA's UMU vanilla: about 0.75 / 0.81 (65–66).
+- If no epoch of the 3 meets the acceptance bar, training continues from the epoch-3 adapter for up to 3 more epochs:
+  same data, lr 1e-4 decaying linearly to 0 over the extra epochs, a readout after each
+  (`scripts/finetune_umu_vanilla.py --extra-epochs 3`).
+- The selection and acceptance rule is unchanged and covers all epochs. If no epoch is accepted after 6, stop and
+  report.
+
+**Stage 1, epochs 1–3** (2026-11-22).
+- Epoch 3: forget txt 0.770 / img 0.630; retain 0.715 / 0.600; doubly-correct 61 forget / 108 retain.
+- Best epoch: 2 (min 0.640). **Not accepted.** Its adapter was merged into `models/qwen2vl7b_umu_vanilla`; no
+  unlearning used it.
+- The portrait route plateaus at 0.62–0.64 while the training loss falls to about 0.19.
+- Wrong answers are mostly numeric attributes: height, salary, birth date.
+- The amendment's 3 extra epochs started automatically at 22:03 UTC.
+
+**Amendment 2: acceptance rule changed after seeing the results** (2026-11-22, 23:45 UTC, decided by the user).
+
+| epoch | 4 (extra, lr 1e-4) | 5 (extra) |
+|---|---|---|
+| forget txt / img | 0.760 / 0.650 | 0.790 / 0.610 |
+| retain txt / img | 0.760 / 0.610 | 0.730 / 0.625 |
+| doubly-correct forget / retain | 61 / 118 | 56 / 116 |
+
+Training loss fell to about 0.04. Across epochs 1–5 the portrait route stays at 0.61–0.65.
+
+- **Decision:** the user accepted **epoch 4** without waiting for epoch 6. The 0.70 bar is replaced, post hoc, by
+  "enough doubly-correct forget facts", and epoch 4 has 61. Epoch 4 is also the one the pre-registered selection rule
+  (highest min(txt, img)) picks among epochs 1–5.
+- The extra run was stopped during epoch 6, so its end-of-run merge would not overwrite the vanilla used by the
+  unlearning runs. No epoch-6 readout exists.
+- Epoch 4's adapter is merged into `models/qwen2vl7b_umu_vanilla`, replacing the earlier epoch-2 merge.
+- **Consequence:** Qwen's portrait route is weaker at baseline than LLaVA's (0.65 vs about 0.81 on all forget
+  facts). The leak tests read doubly-correct facts only, but the paper must report this difference and that this
+  rule was set after seeing the data.
+
+**Outcome on the epoch-4 vanilla, stages 2–3** (2026-11-23; preliminary, because DEV-031 may replace the vanilla).
+- Runs: `runs/qwen2vl7b/umu_unlearn/umu_npo_rt_txt_lr2e-04_s{0,1,2}`, run in about 25 minutes each.
+- core3: `results/qwen2vl7b/mech_umu/<run>/step<N>/core3/`; checks 0.00 under eager.
+- Every seed qualified at lr 2e-4.
+
+| seed (selected step) | forget dc txt / img / txt+img | G | unseen retain txt / img |
+|---|---|---|---|
+| 0 (300) | 0.24 / 0.89 / 0.40 | +0.65 | 0.92 / 0.92 |
+| 1 (190) | 0.40 / 0.92 / 0.68 | +0.52 | 0.94 / 0.95 |
+| 2 (266) | 0.42 / 0.92 / 0.56 | +0.50 | 0.94 / 0.95 |
+
+First-token forgetting F (nats):
+
+| seed | T | T + name-off | T + control-off | NB (blank) | NP visible | NP knockout | NP knockout + name-off |
+|---|---|---|---|---|---|---|---|
+| 0 | 16.39 | 0.22 | 16.28 | 15.61 | 13.91 | 16.16 | 0.21 |
+| 1 | 7.35 | 0.07 | 7.27 | 7.29 | 5.11 | 7.30 | 0.06 |
+| 2 | 11.43 | 0.10 | 11.45 | 10.77 | 8.37 | 11.23 | — |
+
+θ0 top-1: T 0.95, NP knockout 0.95.
+
+**Verdict under DEV-030:**
+- **Q1 partly met.** The portrait question leaks in every seed (img 0.89–0.92 ≥ 0.85). The name + portrait question
+  does not reach 0.85 (0.40–0.68).
+- **Q2 met as defined** (F knockout ≥ 0.5 F(T); θ0 0.95). It is uninformative here, because the portrait does not
+  undo the forgetting even without the knockout.
+- **Q3 met in every seed.** LoRA off at the name tokens removes 98–99% of the forgetting; off at as many other tokens,
+  none.
+- DEV-029's 6a fails (NP visible 5–14 nats).
+
+**Reading (exploratory):**
+- On Qwen, too, text-only unlearning is written on the name tokens, and a question that identifies the person by the
+  portrait alone escapes it.
+- Unlike LLaVA, adding the portrait to the name question does not rescue the answer, and a blank image does not
+  either (NB ≈ T). The name-bound edit dominates whenever the name is present.
+- This fits this vanilla's weak face → facts route (DEV-031). Whether it is a property of Qwen or of an undertrained
+  vanilla, the DEV-031 vanilla will tell.
 
 ### DEV-029 — 2026-11-22 — closing the causal chain: is the name-located edit still active when the portrait is shown, and only overridden by the face route? (decided by: user; design by: implementer)
 **Chain.** For the name-bound models:

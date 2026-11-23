@@ -52,7 +52,7 @@ from PIL import Image  # noqa: E402
 from scripts.mech_umu_form_sweep import answer_logprobs, facts_for  # noqa: E402
 from vlmu.config import base_parser, resolve  # noqa: E402
 from vlmu.mech import tools  # noqa: E402
-from vlmu.mech.hooks import patch_outputs, record_outputs  # noqa: E402
+from vlmu.mech.hooks import lm_parts, patch_outputs, record_outputs  # noqa: E402
 from vlmu.models import get_adapter  # noqa: E402
 from vlmu.runs import free, model_dir, results_dir  # noqa: E402
 from vlmu.umu import encode_teacher_forced, load_umu  # noqa: E402
@@ -65,12 +65,16 @@ FOUND, NONE_MAX, W_MIN, S_MIN = 0.5, 0.2, 0.8, 0.9               # DEV-024
 SELF_TOL = 0.05
 
 
+_PROMPT = None     # DEV-032: adapter.prompt for non-LLaVA families; None keeps the LLaVA strings of DEV-024/027
+
+
 def name_prompt(f):
-    return f"USER: {f['q_uni']}\nASSISTANT:"
+    return _PROMPT(f["q_uni"], False) if _PROMPT else f"USER: {f['q_uni']}\nASSISTANT:"
 
 
 def face_prompt(f):
-    return f"USER: <image>\n{f['q_uni'].replace(f['name'], 'this person')}\nASSISTANT:"
+    q = f["q_uni"].replace(f["name"], "this person")
+    return _PROMPT(q, True) if _PROMPT else f"USER: <image>\n{q}\nASSISTANT:"
 
 
 def make_pairs(facts):
@@ -137,10 +141,22 @@ def align(src, tgt, max_k):
 
 
 @torch.no_grad()
-def scored(adapter, model, tgt, store=None, index=None, layer=None):
+def scored(adapter, model, tgt, store=None, index=None, layer=None, both=False):
+    """Summed answer log p per row (DEV-024); both=True: (summed, first answer token) (DEV-032)."""
     ctx = patch_outputs(model, "resid", {layer: store[layer]}, index) if layer is not None else contextlib.nullcontext()
-    with ctx:
-        return answer_logprobs(adapter, model, tgt)[0]
+    if not both:
+        with ctx:
+            return answer_logprobs(adapter, model, tgt)[0]
+    with ctx:                                   # as answer_logprobs, plus top-1 of the first answer token
+        t = tools.answer_targets(tgt)
+        logits = tools.forward_logits(adapter, model, tgt)
+    lp = tools.target_logprob(logits[t["b"], t["pos"]], t["tok"])
+    f = tools._first(t)
+    first = torch.full((t["n_rows"],), float("nan"), device=lp.device)
+    top = torch.zeros(t["n_rows"], dtype=torch.bool, device=lp.device)
+    first[t["b"][f]] = lp[f]
+    top[t["b"][f]] = logits[t["b"][f], t["pos"][f]].argmax(-1) == t["tok"][f]
+    return (tools._per_row(lp, t).float().cpu().tolist(), first.float().cpu().tolist(), top.cpu().tolist())
 
 
 def first_token(adapter, f, answer):
@@ -195,7 +211,7 @@ def run_map_first(adapter, model, pairs, conds, layers, args, log):
 def run_imageswap(adapter, model, pairs, layers, args, log):
     """DEV-027 part B (after Cohen et al., ACL 2025): at one layer, the image-token states of F(A) replace those of
     F(B) (same positions: the two face prompts are the same text); first answer token scored."""
-    img_id = getattr(model.config, "image_token_index", 32000)
+    img_id = lm_parts(model)[2]
     recs, checked = [], False
     for i in range(0, len(pairs), args.batch_img):
         chunk = pairs[i:i + args.batch_img]
@@ -226,6 +242,20 @@ def run_imageswap(adapter, model, pairs, layers, args, log):
         store = None
         log(f"  {min(i + args.batch_img, len(pairs))}/{len(pairs)} pairs")
     return recs
+
+
+def summarize_transfer(rs, layers):
+    """DEV-032: S(L) = (lp_F - lp_F,patched) / (theta_u's lp_F - lp_N), for theta_u and the theta_0 control, on the summed
+    answer log p (as DEV-024) and on the first answer token; top-1 of the correct first token in the patched face route."""
+    out = {}
+    for key, (lf, ln, pt) in {"sum": ("lp_F", "lp_N", "patched"), "first": ("lp1_F", "lp1_N", "patched1")}.items():
+        gap = float(np.mean([r["u"][lf] - r["u"][ln] for r in rs]))
+        out[key] = {"gap_nats": gap, **{t: {str(L): float(np.mean([r[t][lf] - r[t][pt][str(L)] for r in rs]) / gap)
+                                            for L in layers} for t in ("u", "0")}}
+    out["top1"] = {t: {"N": float(np.mean([r[t]["top1_N"] for r in rs])), "F": float(np.mean([r[t]["top1_F"] for r in rs])),
+                       **{str(L): float(np.mean([r[t]["patched_top1"][str(L)] for r in rs])) for L in layers}} for t in ("u", "0")}
+    out["n_facts"] = len(rs)
+    return out
 
 
 def summarize_first(recs, layers):
@@ -339,12 +369,16 @@ def run_transfer(adapter, model, facts, layers, args, log):
                 tn = encode_teacher_forced(adapter, [tf_rows("N", f, f["answer_text"]) for f in chunk])
                 tf = encode_teacher_forced(adapter, [tf_rows("F", f, f["answer_text"]) for f in chunk])
                 index, _ = align(src, tf, [post_referent_len(adapter, f) for f in chunk])
-                out[tag] = {"lp_N": scored(adapter, model, tn), "lp_F": scored(adapter, model, tf),
-                            **{L: scored(adapter, model, tf, store, index, L) for L in layers}}
+                out[tag] = {"lp_N": scored(adapter, model, tn, both=True), "lp_F": scored(adapter, model, tf, both=True),
+                            **{L: scored(adapter, model, tf, store, index, L, both=True) for L in layers}}
         for j, f in enumerate(chunk):
             recs.append({"pair_id": f["pair_id"], "field": f["field"],
-                         **{t: {"lp_N": out[t]["lp_N"][j], "lp_F": out[t]["lp_F"][j],
-                                "patched": {str(L): out[t][L][j] for L in layers}} for t in ("u", "0")}})
+                         **{t: {"lp_N": out[t]["lp_N"][0][j], "lp_F": out[t]["lp_F"][0][j],
+                                "patched": {str(L): out[t][L][0][j] for L in layers},
+                                "lp1_N": out[t]["lp_N"][1][j], "lp1_F": out[t]["lp_F"][1][j],
+                                "patched1": {str(L): out[t][L][1][j] for L in layers},
+                                "top1_N": out[t]["lp_N"][2][j], "top1_F": out[t]["lp_F"][2][j],
+                                "patched_top1": {str(L): out[t][L][2][j] for L in layers}} for t in ("u", "0")}})
         log(f"  {min(i + args.batch_img, len(facts))}/{len(facts)} facts")
     return recs
 
@@ -460,6 +494,7 @@ def main():
     p.add_argument("--report-first", action="store_true", help="DEV-027 report: mapfirst + imageswap")
     p.add_argument("--conds", default="X1,X2,W1,W2,S1,S2")
     p.add_argument("--run-id", default=None, help="part 2: the unlearned run")
+    p.add_argument("--dc-run", default=DC_RUN, help="run whose baseline_dc.json supplies the facts (DEV-032: a Qwen run)")
     p.add_argument("--step", type=int, default=300)
     p.add_argument("--layers", default="0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,31")
     p.add_argument("--max-pairs", type=int, default=0)
@@ -468,14 +503,25 @@ def main():
     args = p.parse_args()
     cfg = resolve(args)
     layers = [int(x) for x in args.layers.split(",")]
-    dc_dir = model_dir(cfg) / "umu_unlearn" / DC_RUN
+    dc_dir = model_dir(cfg) / "umu_unlearn" / args.dc_run
     n_eval = read_json(dc_dir / "config.json")["umu"]["n_retain_eval"]
-    base_out = results_dir(cfg) / "mech_umu" / DC_RUN / "step0" / "convergence"
+    base_out = results_dir(cfg) / "mech_umu" / args.dc_run / "step0" / "convergence"
     if args.report_first:
         log = Logger(base_out / "report_first_log.txt")
         recs = [r for d in sorted(base_out.glob("part1first_*")) for r in read_jsonl(d / "items.jsonl")]
         recs += read_jsonl(base_out / "imageswap" / "items.jsonl")
         s = summarize_first(recs, layers)
+        for d in sorted((results_dir(cfg) / "mech_umu").glob("*/step*/convergence_transfer")):
+            rs = read_jsonl(d / "items.jsonl")
+            if "lp1_F" in rs[0]["u"]:            # DEV-032 items; DEV-024's (answer sum only) are left to --report
+                s.setdefault("transfer", {})[f"{d.parent.parent.name}/{d.parent.name}"] = summarize_transfer(rs, layers)
+        for name, t in s.get("transfer", {}).items():
+            for key in ("sum", "first"):
+                log(f"transfer {name} [{key}] (theta_u route gap {t[key]['gap_nats']:.2f} nats): θu "
+                    + " ".join(f"L{L}:{t[key]['u'][str(L)]:+.2f}" for L in layers))
+                log(f"{'':{len(name) + 25}s}θ0 " + " ".join(f"L{L}:{t[key]['0'][str(L)]:+.2f}" for L in layers))
+            log(f"transfer {name} top-1 θu: N {t['top1']['u']['N']:.2f} F {t['top1']['u']['F']:.2f} patched "
+                + " ".join(f"L{L}:{t['top1']['u'][str(L)]:.2f}" for L in layers))
         atomic_write_json(base_out / "summary_first.json", s)
         log(f"DEV-027: {s['n_pairs_kept']}/{s['n_pairs']} pairs kept; verdict: {s['verdict']}; first layer >= 0.5: {s['L_star']}; "
             f"image-token swap: last layer >= 0.5 = {s.get('L_c_image')}")
@@ -514,6 +560,8 @@ def main():
     dfs = load_umu(cfg["paths"]["root"], n_eval, 0, print, cfg["umu"]["forget_split"])
     facts = sorted(facts_for(dfs, dc), key=lambda f: (f["set"], f["pair_id"]))
     adapter = get_adapter({**cfg["model"], "id": cfg["umu"]["ckpt"], "processor_id": cfg["model"]["id"]})
+    global _PROMPT
+    _PROMPT = None if cfg["model"]["family"] == "llava" else adapter.prompt
     if args.part in ("mapfirst", "imageswap"):
         pairs = make_pairs(facts)
         for f in {id(x): x for pr in pairs for x in pr}.values():
@@ -543,7 +591,7 @@ def main():
         pairs = make_pairs(facts)
         if args.max_pairs:
             pairs = pairs[:args.max_pairs]
-        log(f"part 1 (theta_0), conditions {conds}: {len(pairs)} pairs from {len(facts)} dc facts of {DC_RUN}; layers {layers}")
+        log(f"part 1 (theta_0), conditions {conds}: {len(pairs)} pairs from {len(facts)} dc facts of {args.dc_run}; layers {layers}")
         a, b = pairs[0]
         log(f"  e.g. N(B) {name_prompt(b)!r}\n       F(A) {face_prompt(a)!r}; answers A {a['answer_text']!r} / B {b['answer_text']!r}")
         model = adapter.load_model()

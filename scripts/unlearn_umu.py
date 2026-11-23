@@ -31,7 +31,7 @@ from vlmu.umu import add_distractors, degeneracy, fact_table, generate_protocol,
 from vlmu.utils import Logger, append_jsonl, atomic_write_json, is_done, mark_done, read_json, read_jsonl, \
     seed_all, tracked_run  # noqa: E402
 
-METHODS = ("npo", "ga", "npo_rt", "ga_diff", "rnpo_rt")   # rnpo_rt: relative NPO + retain (DEV-023)
+METHODS = ("npo", "ga", "npo_rt", "ga_diff", "rnpo_rt", "kl", "po")   # rnpo_rt: DEV-023; kl, po: DEV-036
 
 
 def fmt(x, spec="+.3f"):

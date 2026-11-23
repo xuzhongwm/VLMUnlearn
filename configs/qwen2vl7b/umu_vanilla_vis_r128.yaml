@@ -1,0 +1,4 @@
+# DEV-034: as umu_vanilla_r128.yaml, with LoRA also on the vision tower and the merger (DEV-031). run_tag "vis_r128".
+base: [umu_vanilla_r128.yaml]
+lora: {vision: true}
+run_tag: vis_r128

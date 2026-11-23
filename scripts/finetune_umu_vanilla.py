@@ -46,9 +46,13 @@ def image_rows(df):
 def main():
     p = base_parser(__doc__)
     p.add_argument("--merge-epoch", type=int, default=0, help="merge this epoch instead of the selected one")
+    p.add_argument("--extra-epochs", type=int, default=0,
+                   help="DEV-030 amendment: continue from the last epoch's adapter for N more epochs (own lr schedule)")
+    p.add_argument("--extra-lr", type=float, default=1e-4)
     args = p.parse_args()
     cfg = resolve(args)
-    run_dir = model_dir(cfg) / "umu_vanilla"
+    tag = f"_{cfg['run_tag']}" if cfg.get("run_tag") else ""          # DEV-031: e.g. umu_vanilla_vis
+    run_dir = model_dir(cfg) / f"umu_vanilla{tag}"
     log = Logger(run_dir / "log.txt")
     tcfg, ucfg = cfg["train"], cfg["umu"]
     dfs = load_umu(cfg["paths"]["root"], 450, 0, log, ucfg["forget_split"])        # 50 + 450 = all 500 profiles
@@ -68,21 +72,15 @@ def main():
         f"training rows from {sum(len(d) for d in dfs.values())} profiles; {len(eval_rows)} readout items per epoch")
     log("example prompt: " + repr(adapter.prompt("<question>", True)))
     epochs_path = run_dir / "epochs.jsonl"
-    if not is_done(run_dir):
-        model = adapter.add_lora(adapter.load_model(), cfg["lora"], tcfg["seed"])
-        plan = BatchPlan(rows, tcfg["batch_size"], tcfg["seed"])
-        ctx = Ctx(model=model, adapter=adapter, cfg=cfg, run_dir=run_dir, plan=plan, retain_plan=None,
-                  image_root=image_root, loss="nll", seed=tcfg["seed"], ref_cache=None, text_only=False)
-        spe = plan.steps_per_epoch
-        total = tcfg.get("max_steps") or spe * tcfg["epochs"]
-        ckpts = {min(spe * e, total) for e in range(1, tcfg["epochs"] + 1)}
-        log(f"{spe} steps/epoch, {total} steps, readout after steps {sorted(ckpts)}")
-        done = {r["step"] for r in read_jsonl(epochs_path)}
+
+    def make_on_ckpt(model, spe, offset):
+        """Readout after an epoch: save the adapter as ckpt/epoch<offset + k>, score, append to epochs.jsonl."""
+        done = {r["epoch"] for r in read_jsonl(epochs_path)}
 
         def on_ckpt(step):
-            if step in done:
+            ep = offset + max(1, round(step / spe))
+            if ep in done:
                 return {}
-            ep = max(1, round(step / spe))
             save_adapter(model, run_dir / "ckpt" / f"epoch{ep}")
             res = generate_protocol(model, adapter.processor, eval_rows, run_dir / "evals" / f"epoch{ep}.jsonl", log,
                                     batch_size=cfg["eval"].get("gen_batch", 8), dtype=adapter.dtype)
@@ -95,11 +93,43 @@ def main():
             log(f"epoch {ep}: forget txt {rec['forget_txt']:.3f} img {rec['forget_img']:.3f} | retain txt "
                 f"{rec['retain_txt']:.3f} img {rec['retain_img']:.3f} | doubly-correct {n_dc}")
             return {}
+        return on_ckpt
 
-        train(ctx, total, total, ckpts, on_ckpt, log)
+    if not is_done(run_dir):
+        model = adapter.add_lora(adapter.load_model(), cfg["lora"], tcfg["seed"])
+        plan = BatchPlan(rows, tcfg["batch_size"], tcfg["seed"])
+        ctx = Ctx(model=model, adapter=adapter, cfg=cfg, run_dir=run_dir, plan=plan, retain_plan=None,
+                  image_root=image_root, loss="nll", seed=tcfg["seed"], ref_cache=None, text_only=False)
+        spe = plan.steps_per_epoch
+        total = tcfg.get("max_steps") or spe * tcfg["epochs"]
+        ckpts = {min(spe * e, total) for e in range(1, tcfg["epochs"] + 1)}
+        log(f"{spe} steps/epoch, {total} steps, readout after steps {sorted(ckpts)}")
+        train(ctx, total, total, ckpts, make_on_ckpt(model, spe, 0), log)
         model = ctx = None
         free()
         mark_done(run_dir, {"final_step": total})
+    extra_dir = run_dir / "extra"
+    if args.extra_epochs and not is_done(extra_dir):
+        from peft import PeftModel
+        last = max(r["epoch"] for r in read_jsonl(epochs_path) if r["epoch"] <= tcfg["epochs"])
+        base = adapter.load_model()
+        if cfg["lora"].get("gradient_checkpointing", True):
+            base.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+            base.enable_input_require_grads()
+        model = PeftModel.from_pretrained(base, str(run_dir / "ckpt" / f"epoch{last}"), is_trainable=True)
+        ecfg = {**cfg, "train": {**tcfg, "lr": args.extra_lr, "warmup_ratio": 0.0}}
+        plan = BatchPlan(rows, tcfg["batch_size"], tcfg["seed"] + 1)
+        ctx = Ctx(model=model, adapter=adapter, cfg=ecfg, run_dir=extra_dir, plan=plan, retain_plan=None,
+                  image_root=image_root, loss="nll", seed=tcfg["seed"] + 1, ref_cache=None, text_only=False)
+        spe = plan.steps_per_epoch
+        total = spe * args.extra_epochs
+        ckpts = {spe * e for e in range(1, args.extra_epochs + 1)}
+        log(f"extra epochs (DEV-030 amendment): from epoch {last}, {args.extra_epochs} more at lr {args.extra_lr} "
+            f"(linear decay), readout after steps {sorted(ckpts)}")
+        train(ctx, total, total, ckpts, make_on_ckpt(model, spe, last), log)
+        model = ctx = None
+        free()
+        mark_done(extra_dir, {"final_step": total})
     recs = read_jsonl(epochs_path)
     best = max(recs, key=lambda r: min(r["forget_txt"], r["forget_img"]))
     ep = args.merge_epoch or best["epoch"]
@@ -111,7 +141,7 @@ def main():
     if cfg["debug"]:
         return
     from peft import PeftModel
-    out = Path(cfg["paths"]["root"]) / "models" / f"{cfg['model']['name']}_umu_vanilla"
+    out = Path(cfg["paths"]["root"]) / "models" / f"{cfg['model']['name']}_umu_vanilla{tag}"
     base = adapter.load_model()
     merged = PeftModel.from_pretrained(base, str(run_dir / "ckpt" / f"epoch{ep}")).merge_and_unload()
     merged.save_pretrained(out, safe_serialization=True)

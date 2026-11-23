@@ -64,14 +64,23 @@ class Adapter:
         self._logits_kw = next((k for k in ("logits_to_keep", "num_logits_to_keep") if k in sig), None)
         return model
 
-    def lora_targets(self, model, min_layer=None, max_layer=None) -> list:
+    def lora_targets(self, model, min_layer=None, max_layer=None, vision=False) -> list:
         """All linear layers of the language model (vision tower + projector stay frozen); optionally only decoder
-        layers min_layer..max_layer (DEV-028: unlearning placed after the convergence point)."""
+        layers min_layer..max_layer (DEV-028: unlearning placed after the convergence point). vision=True also adds
+        every linear layer of the vision tower and the projector (DEV-031: a vanilla fine-tune as UMU's, whose LoRA
+        covers all linear layers)."""
         pat = re.compile(r"\.layers\.(\d+)\.(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)$")
+        vis = re.compile(r"visual|vision|multi_modal_projector")
         names = []
         for n, m in model.named_modules():
+            if not isinstance(m, torch.nn.Linear):
+                continue
+            if vis.search(n):
+                if vision:
+                    names.append(n)
+                continue
             hit = pat.search(n)
-            if not (isinstance(m, torch.nn.Linear) and hit) or re.search(r"visual|vision", n):
+            if not hit:
                 continue
             layer = int(hit.group(1))
             if (min_layer is not None and layer < min_layer) or (max_layer is not None and layer > max_layer):
@@ -87,7 +96,10 @@ class Adapter:
             model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
             model.enable_input_require_grads()
         lo, hi = lcfg.get("min_layer"), lcfg.get("max_layer")
-        targets = self.lora_targets(model, lo, hi)
+        targets = self.lora_targets(model, lo, hi, vision=lcfg.get("vision", False))
+        if lcfg.get("vision", False):
+            n_vis = sum(1 for n in targets if re.search(r"visual|vision|multi_modal_projector", n))
+            print(f"LoRA on the vision side too: {n_vis} vision/projector modules + {len(targets) - n_vis} LM modules")
         if lo is not None or hi is not None:
             layers = sorted({int(re.search(r"\.layers\.(\d+)\.", n).group(1)) for n in targets})
             assert len(targets) == 7 * len(layers), f"expected 7 LoRA modules per layer, got {len(targets)} on {layers}"

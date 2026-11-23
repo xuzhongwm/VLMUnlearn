@@ -5,6 +5,7 @@ resumes exactly from its saved step (adapter + optimizer + scheduler state).
 """
 import math
 import os
+import random
 import shutil
 import time
 from pathlib import Path
@@ -163,9 +164,47 @@ def step_rnpo_rt(ctx, step):
     return {**step_rnpo(ctx, step), **step_retain(ctx, step)}
 
 
+def step_kl(ctx, step):
+    """KL minimisation (Maini et al. 2024; UMU-Bench's KL baseline): gradient ascent on the forget batch, plus
+    retain_weight * KL(p_ref || p_theta) over the retain batch's answer tokens. Reference = the vanilla (adapter
+    disabled) on the same batch, no gradient. (UMU's KL.py uses -(p_theta log p_ref) over all positions instead.)"""
+    out = step_ga(ctx, step)
+    rb = encode(ctx, ctx.retain_plan.batch(step))
+    mask = rb["labels"][:, 1:] != -100
+    with torch.no_grad(), ctx.model.disable_adapter():
+        ref = ctx.adapter.forward(ctx.model, rb)[:, :-1][mask].float().log_softmax(-1)
+    cur = ctx.adapter.forward(ctx.model, rb)[:, :-1][mask].float().log_softmax(-1)
+    kl = F.kl_div(cur, ref, reduction="batchmean", log_target=True)      # KL(ref || cur), mean over answer tokens
+    if step == 0 and kl.item() > 0.01:      # validity check (DEV-036): the LoRA starts at zero, so theta = reference
+        raise RuntimeError(f"step 0: retain KL is {kl.item():.4f}, expected 0 (LoRA not neutral or reference wrong)")
+    (ctx.cfg["unlearn"].get("retain_weight", 1.0) * kl).backward()
+    return {**out, "retain_kl": kl.item()}
+
+
+_IDK = []
+
+
+def idk_answers():
+    """UMU-Bench's refusal strings (unlearn/idk.txt in github.com/QDRhhhh/UMU-bench), one per line."""
+    if not _IDK:
+        _IDK.extend(line.strip() for line in (Path(__file__).parent / "idk_umu.txt").read_text().splitlines() if line.strip())
+    return _IDK
+
+
+def step_po(ctx, step):
+    """Preference optimisation (UMU-Bench's PO; TOFU's IDK): NLL of a refusal on the forget batch, plus retain NLL.
+    As in UMU's PO.py, the refusal is drawn at random for every row each time it is used (seeded by run seed, step)."""
+    rng = random.Random(f"po/{ctx.seed}/{step}")
+    rows = [{**r, "answer": rng.choice(idk_answers())} for r in ctx.plan.batch(step)]
+    tok_lp, _, _ = ctx.adapter.answer_logprobs(ctx.model, encode(ctx, rows))
+    nll = -tok_lp.mean()
+    nll.backward()
+    return {"idk_nll": nll.item(), **step_retain(ctx, step)}
+
+
 STEP_FNS = {"nll": step_nll, "ga": step_ga, "ga_diff": step_ga_diff, "npo": step_npo, "npo_rt": step_npo_rt,
-            "rnpo_rt": step_rnpo_rt}
-RETAIN_METHODS = ("ga_diff", "npo_rt", "rnpo_rt")   # need a retain BatchPlan
+            "rnpo_rt": step_rnpo_rt, "kl": step_kl, "po": step_po}
+RETAIN_METHODS = ("ga_diff", "npo_rt", "rnpo_rt", "kl", "po")   # need a retain BatchPlan
 NPO_METHODS = ("npo", "npo_rt", "rnpo_rt")          # need a reference cache
 RNPO_METHODS = ("rnpo_rt",)                         # forget rows need distractors (vlmu/umu.py:add_distractors)
 

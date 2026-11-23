@@ -1,0 +1,5 @@
+# DEV-031: as umu_vanilla.yaml, but the LoRA also covers the vision tower and the merger (as UMU's own finetune
+# script, whose LoRA covers all linear layers). Separate run dir and merged model: run_tag "vis".
+base: [umu_vanilla.yaml]
+lora: {vision: true}
+run_tag: vis
