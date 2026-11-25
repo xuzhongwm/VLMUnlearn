@@ -108,17 +108,46 @@ def load_umu(root, n_retain, n_celeb, log, forget_split="forget_10"):
 def unlearn_rows(df, form="txt"):
     """UMU's unlearning set for one modality, in this repo's training-row format. txt = UM_QA, no
     image (UMU unlearn_dataset.py:Unimodal_Dataset; its prompt "USER: {q}\\nASSISTANT: {a}" is
-    LlavaAdapter's text-only format). img = MM_QA + the portrait (not used yet)."""
-    assert form == "txt", "only text-only (T->M) unlearning is wired up"
+    LlavaAdapter's text-only format). img = MM_QA ("this person" questions) + the portrait, stored as <ID>.jpg under the
+    run's image root (DEV-040: used for the retain term only)."""
+    assert form in ("txt", "img"), form
     rows = []
     for _, row in df.iterrows():
-        qa = parse(row["UM_QA"])
+        qa = parse(row["UM_QA" if form == "txt" else "MM_QA"])
         for field, q in qa.get("question", {}).items():
             a = qa.get("answer", {}).get(field)
             if a is None:
                 continue
             rows.append({"uid": f"umu_unlearn/{row['ID']}/{field}/{form}", "profile": row["ID"], "field": field,
-                         "form": form, "question": q, "answer": str(a), "image": None})
+                         "form": form, "question": q, "answer": str(a),
+                         "image": None if form == "txt" else f"{row['ID']}.jpg"})
+    return rows
+
+
+DESC_FIELDS = ("Born", "Birth", "Occupation", "Height", "Education", "Annual_Salary", "Residence")
+DESC_LABEL = {"Born": "Place of birth", "Birth": "Date of birth", "Gender": "Gender", "Occupation": "Occupation",
+              "Height": "Height", "Education": "Education", "Annual_Salary": "Annual salary", "Residence": "Residence",
+              "Medical_Conditions": "Medical conditions"}
+
+
+def describe(bio, skip):
+    """A person as a list of Biography attributes, without the name and without the attribute `skip` (DEV-037)."""
+    return "Here are some details about a person.\n" + "\n".join(
+        f"{DESC_LABEL[k]}: {bio[k]}" for k in DESC_LABEL if k != skip and bio.get(k)) + "\n"
+
+
+def desc_unlearn_rows(df):
+    """DEV-039: name-free unlearning rows (text only). For each person and each attribute in DESC_FIELDS: the person's
+    other attributes as a list (describe), then the MM_QA 'this person' question; the answer is the UM_QA answer."""
+    rows = []
+    for _, row in df.iterrows():
+        bio, um, mm = parse(row["Biography"]), parse(row["UM_QA"]), parse(row["MM_QA"])
+        for field in DESC_FIELDS:
+            a, q = um.get("answer", {}).get(field), mm.get("question", {}).get(field)
+            if a is None or not q:
+                continue
+            rows.append({"uid": f"umu_unlearn/{row['ID']}/{field}/desc", "profile": row["ID"], "field": field,
+                         "form": "desc", "question": describe(bio, field) + q, "answer": str(a), "image": None})
     return rows
 
 

@@ -26,8 +26,8 @@ from vlmu.models import get_adapter  # noqa: E402
 from vlmu.runs import free, model_dir, results_dir  # noqa: E402
 from vlmu.train import NPO_METHODS, RETAIN_METHODS, RNPO_METHODS, BatchPlan, Ctx, clear_resume, save_adapter, \
     train  # noqa: E402
-from vlmu.umu import add_distractors, degeneracy, fact_table, generate_protocol, load_umu, protocol_items, \
-    protocol_summary, umu_run_id, unlearn_rows  # noqa: E402
+from vlmu.umu import add_distractors, degeneracy, desc_unlearn_rows, fact_table, generate_protocol, load_umu, \
+    profile_name, protocol_items, protocol_summary, save_image, umu_run_id, unlearn_rows  # noqa: E402
 from vlmu.utils import Logger, append_jsonl, atomic_write_json, is_done, mark_done, read_json, read_jsonl, \
     seed_all, tracked_run  # noqa: E402
 
@@ -72,7 +72,11 @@ def main():
     args = base_parser(__doc__).parse_args()
     cfg = resolve(args)
     u, tcfg, ucfg = cfg["unlearn"], cfg["train"], cfg["umu"]
-    assert u["method"] in METHODS and u["modality"] == "txt", f"supported: {METHODS} x txt"
+    assert u["method"] in METHODS and u["modality"] in ("txt", "img", "mix"), f"supported: {METHODS} x (txt, img, mix)"
+    if u["modality"] in ("img", "mix"):      # DEV-043: portrait questions only; DEV-053 (mix): name rows + portrait rows
+        assert u["method"] not in RNPO_METHODS and not u.get("desc_mix") and not u.get("retain_img"), \
+            "unlearning with portraits: relative NPO, desc_mix and retain_img are not wired up"
+    base_form = "txt" if u["modality"] == "mix" else u["modality"]
     run_id = umu_run_id(cfg)
     run_dir = model_dir(cfg) / "umu_unlearn" / run_id
     log = Logger(run_dir / "log.txt")
@@ -90,15 +94,63 @@ def main():
         if cfg["debug"]:
             dfs = {k: v.head(2) for k, v in dfs.items()}
             retain_unlearn_df = retain_unlearn_df.head(2)
-        forget = unlearn_rows(dfs["forget"], u["modality"])
+        forget = unlearn_rows(dfs["forget"], base_form)
         if u["method"] in RNPO_METHODS:
             forget = add_distractors(forget, u.get("n_distractors", 3), pool=unlearn_rows(full_forget, u["modality"]))
             log(f"relative NPO: {sum(len(r['distractors']) for r in forget) / len(forget):.2f} distractors per forget row "
                 f"(other people's answers to the same question); e.g. {forget[5]['answer']!r} vs {forget[5]['distractors']}")
-        retain = unlearn_rows(retain_unlearn_df, u["modality"]) if n_ru else []
+        retain = unlearn_rows(retain_unlearn_df, base_form) if n_ru else []
         if cfg["debug"]:
             forget, retain = forget[:cfg.get("debug_rows", 16)], retain[:cfg.get("debug_rows", 16)]
-        assert all(r["image"] is None for r in forget + retain), "text-only unlearning data contains images"
+        if u.get("desc_mix"):      # DEV-039: name-free description rows for the forget and the retain people alike
+            assert u["method"] not in RNPO_METHODS, "desc_mix is not wired up for relative NPO"
+            n_f, n_r = len(forget), len(retain)
+            forget = forget + desc_unlearn_rows(dfs["forget"])
+            retain = retain + (desc_unlearn_rows(retain_unlearn_df) if n_ru else [])
+            log(f"desc_mix: forget {n_f} name rows + {len(forget) - n_f} description rows; retain {n_r} + {len(retain) - n_r}; "
+                f"e.g. {forget[-1]['question']!r} -> {forget[-1]['answer']!r}")
+        image_root = None
+        if u.get("retain_img") and n_ru:      # DEV-040: the retain term also holds portrait questions of the retain people
+            image_root = run_dir / "images"
+            people = retain_unlearn_df.head(2) if cfg["debug"] else retain_unlearn_df
+            for _, row in people.iterrows():
+                save_image(row["image"], image_root / f"{row['ID']}.jpg")
+            n_r = len(retain)
+            retain = retain + unlearn_rows(people, "img")
+            log(f"retain_img: retain {n_r} text rows + {len(retain) - n_r} portrait rows of {len(people)} retain people; "
+                f"the forget rows stay text-only")
+        if u["modality"] in ("img", "mix"):   # DEV-043: portraits of the forget and the retain-unlearn people; no name in a portrait row
+            image_root = run_dir / "images"
+            for df in (dfs["forget"], retain_unlearn_df):
+                for _, row in df.iterrows():
+                    save_image(row["image"], image_root / f"{row['ID']}.jpg")
+            names = {row["ID"]: profile_name(row) or "" for df in (dfs["forget"], retain_unlearn_df) for _, row in df.iterrows()}
+
+            def named(r):       # the question or the answer mentions the person's first or last name
+                parts = [w for w in names[r["profile"]].split() if len(w) >= 3]
+                return any(w.lower() in (r["question"] + " " + r["answer"]).lower() for w in parts)
+            if u["modality"] == "mix":    # DEV-053: the name rows of text-only unlearning + the name-free portrait rows of DEV-043
+                assert all(r["image"] is None for r in forget + retain), "mixed unlearning: a name row has an image"
+                f_img, r_img = unlearn_rows(dfs["forget"], "img"), (unlearn_rows(retain_unlearn_df, "img") if n_ru else [])
+                if cfg["debug"]:
+                    f_img, r_img = f_img[:cfg.get("debug_rows", 16)], r_img[:cfg.get("debug_rows", 16)]
+                f_img, r_img = [r for r in f_img if not named(r)], [r for r in r_img if not named(r)]
+                assert all(r["image"] for r in f_img + r_img), "mixed unlearning: a portrait row has no image"
+                log(f"mixed unlearning: forget {len(forget)} name rows (no image) + {len(f_img)} portrait rows (no name); retain "
+                    f"{len(retain)} + {len(r_img)}; e.g. {forget[0]['question']!r} and {f_img[0]['question']!r} -> {f_img[0]['answer']!r}")
+                forget, retain = forget + f_img, retain + r_img
+            else:
+                n_f, n_r = len(forget), len(retain)
+                dropped = sorted({r["field"] for r in forget + retain if named(r)})
+                forget, retain = [r for r in forget if not named(r)], [r for r in retain if not named(r)]
+                assert all(r["image"] for r in forget + retain), "image-only unlearning: a row has no image"
+                assert not any(named(r) for r in forget + retain), "image-only unlearning: a row contains the person's name"
+                log(f"image-only unlearning: {len(forget)} of {n_f} forget rows and {len(retain)} of {n_r} retain rows kept, all with a "
+                    f"portrait; rows that mention the person's name are dropped (fields {dropped}); "
+                    f"e.g. {forget[0]['question']!r} -> {forget[0]['answer']!r}")
+        else:
+            assert all(r["image"] is None for r in forget), "text-only unlearning: a forget row has an image"
+            assert image_root is not None or all(r["image"] is None for r in retain), "retain rows have images without retain_img"
         assert not set(retain_unlearn_df["ID"]) & set(dfs["retain"]["ID"]), "retain-unlearn overlaps the retain readout"
         # 'retain_seen': people the retain term trains on (the first n of the retain-unlearn set). Comparing them with the
         # unseen readout people separates "the retain term protects only the people it was shown" from "forgetting
@@ -116,13 +168,13 @@ def main():
         plan = BatchPlan(forget, tcfg["batch_size"], u["seed"])
         rplan = BatchPlan(retain, tcfg["batch_size"], u["seed"] + 7919) if retain else None
         ctx = Ctx(model=model, adapter=adapter, cfg=cfg, run_dir=run_dir, plan=plan, retain_plan=rplan,
-                  image_root=None, loss=u["method"], seed=u["seed"],
-                  ref_cache={} if u["method"] in NPO_METHODS else None, text_only=True)
+                  image_root=image_root, loss=u["method"], seed=u["seed"],
+                  ref_cache={} if u["method"] in NPO_METHODS else None, text_only=u["modality"] == "txt")
         spe = plan.steps_per_epoch
         total = tcfg.get("max_steps") or spe * tcfg["max_epochs"]
         every = tcfg.get("eval_every_steps") or max(1, round(spe * tcfg["eval_every_epochs"]))
         ckpts = set(range(every, total + 1, every)) | {total}
-        log(f"{run_id}: {len(forget)} forget rows (txt), {len(retain)} retain-unlearn rows "
+        log(f"{run_id}: {len(forget)} forget rows ({u['modality']}), {len(retain)} retain-unlearn rows "
             f"({len(retain_unlearn_df)} profiles, disjoint from the {len(dfs['retain'])} readout profiles), {spe} steps/epoch, "
             f"{total} steps, eval every {every}; {len(eval_rows)} eval generations per checkpoint")
         gen_bs = cfg["eval"].get("gen_batch", 8)

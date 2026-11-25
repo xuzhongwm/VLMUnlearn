@@ -1320,6 +1320,1529 @@ at L20 and 0.97 at L24; image-token swap 0.53 at L18 and 0.09 at L20.
     switch);
   - the face route reaches the shared representation at L16–20 without passing them.
 
+### DEV-054 — 2026-11-25 — does the cause hold for the whole answer? The position tests with generation, in both directions (decided by: user; design by: implementer)
+**Why.** Every causal test of where the edit sits (DEV-020, DEV-033, DEV-035, DEV-044 to DEV-048) reads the first
+answer token. DEV-052 showed that the last prompt token decides the first answer token only: each later answer position
+reads the person again. The claim "the edit is written at the referent tokens" therefore has to be checked on the
+answer the model actually generates. The user listed this re-check as one of three things the paper depends on
+(2026-11-25).
+
+**Test** (`scripts/mech_umu_answer_level.py`, new; UMU protocol: greedy generation, exact match; the forget dc facts in
+the form the run was trained on).
+- **Checkpoints:**
+  - text-only, name-bound and qualifying: the eight of DEV-050 (Qwen NPO seeds 0, 1, 3, 4 and GD seed 0; LLaVA NPO
+    seeds 0, 4 and GD seed 0); the referent tokens are the name tokens;
+  - portrait-only and qualifying: the seven of DEV-043/047 (LLaVA seeds 0, 2, 3; Qwen seeds 0, 2, 3, 4); the referent
+    tokens are the image tokens.
+- **Conditions:** the LoRA's contribution is switched off by position during the whole generation. The answer positions
+  are the generated tokens.
+
+  | condition | LoRA off at | LoRA on at |
+  |---|---|---|
+  | `u`, `0` (references) | nowhere / everywhere | |
+  | `ref_off` | the referent tokens | the rest of the prompt, the answer positions |
+  | `rest_off` | the prompt tokens that are neither referent nor the last prompt token | the referent tokens, the last prompt token, the answer positions |
+  | `read_off` | the last prompt token and the answer positions | the prompt before its last token |
+  | `ref_only` | everything but the referent tokens | the referent tokens |
+
+- **Share restored:** S(c) = (acc_c − acc_u) / (acc_0 − acc_u).
+
+**Predictions and thresholds,** per checkpoint:
+- **The edit is written at the referent tokens, for the whole answer:** S(`ref_off`) ≥ 0.7 and S(`rest_off`) ≤ 0.3.
+- **It is not:** S(`ref_off`) ≤ 0.3. Otherwise partial.
+- A checkpoint with acc_0 − acc_u < 0.2 is not readable.
+- **The cause holds** in a direction if at least 80% of its readable checkpoints meet the first rule (the bar of
+  DEV-048); it **fails** if fewer than half do.
+- Reported, no threshold: `read_off` and `ref_only`. Expectation from DEV-050: in Qwen the perturbation at the name is a
+  marker that the unlearned later layers answer, so `read_off` should restore much in Qwen and less in LLaVA; `ref_only`
+  should forget little in Qwen.
+
+**Validity** (the script aborts otherwise): the condition `u` gives the same responses as the unhooked model, and `0` the
+same as the model with the adapter disabled, on at least 98% of the items; every row has referent tokens.
+
+**Known limits:** switching the LoRA off at a position also removes what it would write there for later layers, so
+`ref_off` tests necessity of the edit at those tokens, not where the effect is read; one prompt format (with options);
+the forget facts only.
+
+**Sizing:** about 70 facts × 8 generations per checkpoint; about 3 minutes per text checkpoint and 6 per portrait
+checkpoint; 15 checkpoints. It runs on GPUs that DEV-053 leaves idle.
+
+### DEV-053 — 2026-11-25 — does unlearning with names and portraits together still leak through a third entry? The name-free description after mixed unlearning (decided by: user; design by: implementer)
+**Why.** Every edit so far stays with the form of its training input: name rows give an edit at the name tokens,
+portrait rows one at the image tokens (DEV-046), and name plus description rows block both text forms while the
+portrait still answers (DEV-039). The field's fix for the cross-modal leak is to unlearn with both modalities
+(UMU-Bench's multimodal and mixed settings). If an edit is bound to the form of the referent, a third way to refer to
+the person should still work after that. DEV-050 to DEV-052 gave no better intervention, and the user set this as the
+next step (2026-11-25): if it still leaks, the claim moves from "a known behaviour, explained" to "the current fix is
+incomplete as well".
+
+**Runs** (`scripts/unlearn_umu.py` with `unlearn.modality=mix`, new).
+- NPO + retain, the G3 recipe (retain weight 5, 200 retain people, 4 epochs).
+- **Forget rows:** the 600 name rows of the text-only runs (no image) plus the name-free portrait rows of DEV-043
+  (portrait, no name). The retain term has the same two kinds of rows for the retain people.
+- LLaVA and Qwen (r128 vanilla); seed 0; lr 2e-4 and 4e-4, the rates at which the single-form runs qualified. 4 runs.
+
+**Selection,** per model, among the checkpoints of both rates:
+- unseen retain dc txt and img ≥ 0.90;
+- retain-only degeneracy ≤ 0.20 on the txt generations and on the img generations;
+- forget dc txt ≤ 0.70 **and** forget dc img ≤ 0.70 (both trained forms are forgotten).
+- Selected: the lowest max(forget dc txt, forget dc img); ties go to the lower sum, then the earlier step.
+- Secondary, labelled as relaxed: the same with the retain bar at 0.85.
+
+**Readout at the selected checkpoint:** the description test of DEV-038 (`mech_umu_desc_leak.py`; text only; scored
+facts = those θ0 answers under the name and under the description): `name`, `desc`, `name+desc`, `desc_other`, for
+forget and retain people.
+
+**Predictions and thresholds,** on `desc` over the scored forget facts (the portrait thresholds of DEV-039/040):
+- **Leak through the description:** ≥ 0.80. **Blocked:** ≤ 0.50. Otherwise partial.
+- Reported next to it: the selective drop = retain `desc` − forget `desc`.
+- A model without a selected checkpoint is not judged; its relaxed-gate checkpoint is reported.
+- **Prediction from the mechanism: leak, in both models.** The description question has neither name tokens nor image
+  tokens.
+- If it is blocked, mixed training has put the edit somewhere the three forms share. That would be a lead for a method
+  and calls for the location tests on that checkpoint (not part of this entry).
+
+**Part 2, evaluation only:** the description test on the five portrait-only checkpoints of DEV-047. DEV-043 tested its
+two (`desc` 0.92 and 0.84). Prediction: ≥ 0.80 on each.
+
+**Validity:**
+- the script's assertions: name rows carry no image, portrait rows carry an image and no name, the retain-unlearn
+  people are disjoint from the readout's;
+- the description test's own checks (at least 40 scored forget facts; θ0's `desc` accuracy within 0.10 of the plain
+  vanilla's);
+- a `--debug` smoke test of one mixed run first.
+
+**Known limits:**
+- One seed and one objective.
+- Our rows and our recipe, not UMU-Bench's own mixed runs.
+- The description lists the person's other attributes: a strong cue, and a text form.
+- There is no fourth form, so nothing here says what remains after all three are trained.
+
+**Sizing:** 528 steps per run, about half with portraits, and 8 checkpoint readouts: about 50 minutes per run. Only
+GPUs 0, 6 and 7 are idle, so 4 runs take about 1 h 45 min. Then about 5 minutes per description test (2 + 5
+checkpoints). Status: `logs/dev053/orchestrate.txt`.
+
+### DEV-052 — 2026-11-25 — can a forget person be recognised behind the portrait from text alone, and does acting there stop the leak? An activation-level test at the merge (decided by: user; design by: implementer)
+**Why.** DEV-051 found a person code that both routes share after the merge. DEV-050 found that what text-only
+unlearning writes sits at the name tokens, where the portrait question never passes. The third step of the plan is an
+edit keyed on the shared code. Before any weight edit, this entry tests the idea directly on the vanilla with a hook:
+a recogniser built from the forget people's **text** questions only, applied at the last prompt token after the merge.
+It is a feasibility test, not an unlearning method: no weight changes.
+
+**Seen before this entry was written** (offline, on DEV-051's saved states; not results of this entry): a linear
+detector for the 50 forget people as a set does not separate their portrait questions from those of held-out retain
+people (AUC 0.55–0.62). A nearest-code rule does better in Qwen: it fires on 0.92–0.97 of the forget portrait questions
+at layers 22–24, on 0.00 of the portrait questions of retain people whose codes it knows, and on 0.13–0.36 of those of
+people it does not know. In LLaVA it fires on 0.26–0.33 of the forget portrait questions. A map from name codes to face
+codes learned on retain people does not generalise to new people.
+
+**Test** (`scripts/mech_umu_merge_gate.py`, new; θ0 = the vanilla; one layer L per model: DEV-051's best layer, Qwen 24,
+LLaVA 26; the residual stream at the last prompt token).
+- **People:** forget (50); *known retain* = retain profiles 101–200, of which the first 70 are competitors and the last
+  30 are used for calibration only; *unseen retain* = retain profiles 1–100, the readout's retain people.
+- **Codes,** from the plain questions (UM_QA by name, MM_QA by portrait; the 9 attributes of DEV-051; no options):
+  - a forget person: the mean of the centred states of that person's **name questions only**. For a query about
+    attribute a, the code leaves attribute a out, so it never contains the queried fact;
+  - a competitor: one code from the name questions and one from the portrait questions.
+  - Centring: the mean over the competitors for each (route, attribute, prompt format). The readout's prompts have
+    options, so their centroids come from the known retain people's protocol items.
+- **Gate:** it fires when the nearest code (cosine) to the centred query state is a forget person's and the cosine is
+  above τ. τ is the smallest value in 0, 0.05, …, 0.5 at which the gate fires on ≤ 5% of the calibration people's
+  questions, plain and protocol, both routes. No portrait of a forget person and no unseen retain person enters the
+  codes, the centroids or τ; the script asserts the first.
+- **Action when it fires:** the state at the last prompt token at layer L is replaced by the centroid of its (route,
+  attribute, format). One position, one layer, the prompt pass only.
+- **Conditions:** `off` (hook installed, never fires), `gate`, `all` (fires on every question; unseen retain only).
+- **Readout:** UMU protocol (greedy generation, exact match) on the dc facts of a reference run of the same vanilla, in
+  the forms txt and img: forget, and unseen retain. Also the share of questions on which the gate fires, per set and
+  form, on the protocol prompts and on the plain questions.
+
+**Predictions and thresholds** (those of DEV-039/040), under `gate`:
+- **Success:** forget dc img ≤ 0.50. **Partial:** between 0.50 and 0.80. **No effect:** ≥ 0.80.
+- It **qualifies** only with unseen retain dc txt and img ≥ 0.90 and forget dc txt ≤ 0.70; otherwise it is reported and
+  not judged.
+- Expectation from the offline look: success is possible in Qwen (fires on about 0.9 of the forget portrait questions);
+  no effect in LLaVA (fires on ≤ 0.35).
+
+**Validity:**
+- The script aborts if `off` does not reproduce the vanilla on the dc facts (exact match ≥ 0.98 in txt and in img).
+- If `all` leaves unseen retain dc img above 0.60, the action does not remove the answer and the result is marked
+  **not readable**.
+
+**Known limits:**
+- A recogniser plus a state replacement, at activation level. It shows whether the information for a non-leaking
+  text-only edit is present where both routes pass; it is not such an edit.
+- The hook is told the route and the attribute of the question (to pick the centroid).
+- The competitors are retain people whose portraits are used. The readout's retain people are unknown to the gate.
+- One layer per model, chosen from DEV-051, which used the forget people's portraits for its retrieval numbers.
+- The codes come from plain questions and are applied to prompts with options.
+- τ is calibrated on 30 people.
+
+**Sizing:** about 1550 portrait and 1550 text forward passes for the codes and the firing rates, then about 1300
+generations; about 12 minutes per model on one GPU.
+
+**Changed 2026-11-25 after a smoke test, before the full run.** A smoke test (Qwen, 10 forget people, 10 competitors, 6
+calibration people, 62 readout items) was run and its log seen; its numbers are not results. It showed two design
+faults, and the test is changed as follows.
+- **τ is calibrated per prompt format.** The cosines are lower on the prompts with options than on the plain questions,
+  so one τ for both is set by the plain questions and is too strict for the readout. The readout uses the τ of the
+  protocol prompts (≤ 5% on the calibration people's protocol questions); the firing rates on plain questions use the τ
+  of the plain questions.
+- **A deeper action is added and carries the verdict.** Replacing the state at layer L alone left about half of the
+  answers correct even when applied to every question; the layers above restore them. `gate_deep` / `all_deep` replace
+  the state at the last prompt token by the centroid at every layer from L to the last. The thresholds and the
+  qualification rule now refer to `gate_deep`, and "not readable" to `all_deep`. `gate` / `all` (layer L only) are
+  still run and reported.
+- Sizing: five conditions, about 2100 generations; about 15 minutes per model.
+
+**Outcome** (2026-11-25, 02:28–02:35 UTC; code as hashed in `logs/dev052/launch.txt`, uncommitted; GPUs 4 and 5; both
+exit 0). Outputs: `results/<model>/mech_umu/vanilla_<ckpt name>/merge_gate/`. dc facts from
+`umu_npo_rt_txt_lr2e-04_s0_r128` (Qwen: 77 forget, 143 unseen retain) and `umu_npo_rt_txt_lr2e-04_s0_gate_rw5n200`
+(LLaVA: 66 and 122).
+
+Validity: `off` reproduces the vanilla (exact match 0.98–1.00 in every cell). `all_deep` leaves unseen retain dc img at
+0.57 in Qwen (readable, just) and at 0.65 in LLaVA (**not readable** by the rule).
+
+τ (≤ 5% on the calibration people): 0.40 in Qwen and 0.35 in LLaVA, for both prompt formats.
+
+UMU protocol, exact match on the dc facts (in brackets: the share of questions on which the gate fires):
+
+| model, layer | condition | forget txt | forget img | unseen retain txt | unseen retain img |
+|---|---|---|---|---|---|
+| Qwen, 24 | `off` | 1.00 (0.95) | 1.00 (0.32) | 1.00 (0.04) | 0.99 (0.01) |
+| | `gate` (layer 24 only) | 0.73 | 0.86 | 0.98 | 0.99 |
+| | **`gate_deep`** | 0.64 | **0.83** | 0.99 | 0.99 |
+| | `all` / `all_deep` | | | 0.69 / 0.61 | 0.69 / 0.57 |
+| LLaVA, 26 | `off` | 1.00 (0.89) | 0.98 (0.03) | 1.00 (0.02) | 1.00 (0.01) |
+| | `gate` (layer 26 only) | 0.64 | 0.98 | 0.99 | 0.99 |
+| | **`gate_deep`** | 0.61 | **0.98** | 0.99 | 0.99 |
+| | `all` / `all_deep` | | | 0.66 / 0.65 | 0.67 / 0.65 |
+
+The recogniser alone, on the readout's portrait questions of the forget people (never used to build it):
+
+| model | nearest code is the own person's | cosine to the nearest code, median: forget img / unseen retain img | fires at τ = 0 / 0.2 / 0.3 / 0.4: forget img | same: unseen retain img | same: unseen retain txt |
+|---|---|---|---|---|---|
+| Qwen | 0.87 | 0.36 / 0.27 | 0.90 / 0.87 / 0.66 / 0.32 | 0.20 / 0.18 / 0.08 / 0.01 | 0.28 / 0.22 / 0.08 / 0.04 |
+| LLaVA | 0.29 | 0.24 / 0.20 | 0.33 / 0.24 / 0.08 / 0.00 | 0.08 / 0.04 / 0.01 / 0.00 | 0.34 / 0.15 / 0.04 / 0.01 |
+
+On the plain questions (9 attributes, 450 portrait questions of the forget people): the nearest code is the own person's
+for 0.90 (Qwen) and 0.24 (LLaVA); the gate fires on 0.55 and 0.06; on the calibration people it fires on 0.02–0.03.
+
+**Verdict:**
+- **Qwen: no effect.** Forget dc img is 0.83 under `gate_deep` (≥ 0.80). The run qualifies (retain 0.99 and 0.99, forget
+  txt 0.64).
+- **LLaVA: not readable** by the rule. The gate fires on 0.03 of the forget portrait questions, so it could not have had
+  an effect whatever the action.
+- The expectation "success is possible in Qwen" is **not met**; "no effect in LLaVA" is in line with the firing rate.
+
+**Reading:**
+- **In Qwen the name-route code does identify the person behind the portrait** (the nearest code is the right one for
+  0.87–0.90 of the questions; chance is 0.005). But the match is not strong enough to set forget people apart from
+  people the gate does not know. At a threshold that keeps false alarms at 5%, it fires on a third of the forget
+  portrait questions; without a threshold it fires on 0.90 of them and on 0.20–0.28 of strangers' questions. The
+  offline look that motivated this entry (0.92–0.97) had no threshold and only known competitors.
+- **In LLaVA the two routes share too little** (the right person for 0.24–0.29).
+- **Exploratory, formed after seeing the data: the last prompt token decides the first answer token only.** Under
+  `all_deep`, by attribute (Qwen, unseen retain img; LLaVA is alike): answers whose first token is common to most people
+  stay correct (Annual_Salary 0.96, Height 0.90, Medical_Conditions 0.88, Birth 0.83), and answers whose first token
+  is specific collapse (Born 0.06, Occupation 0.00, Residence 0.24, Education 0.48). Read from the generations: after a
+  generic "$" or "1", the later answer positions still produce the person's value ("$85000.", "168 cm."). Each answer
+  position reads the person again. Where the gate fired, the forget answers stay 0.48 (img) and 0.62 (txt) correct for
+  this reason.
+  - This limits the test: its action cannot remove a multi-token answer, so even a perfect recogniser would have
+    left forget dc img near 0.5–0.6.
+  - It also qualifies the earlier first-token readouts (DEV-015, DEV-044 to DEV-048): they show where the first answer
+    token is decided. An edit that sits only at the last prompt token would not remove the rest of the answer; the
+    perturbation at the name tokens is read by every answer position.
+- **What the three entries say together (DEV-050, DEV-051, DEV-052).** A person code shared by both routes exists after
+  the merge, more in Qwen than in LLaVA. It is enough to name the person and not enough to gate an edit on. Text-only
+  information therefore reaches the portrait route only weakly at the one place where the routes meet. No better
+  intervention follows from these three steps as they stand.
+- **Limits:** one layer per model; a cosine rule on one position; the action is a state replacement at the last prompt
+  token; the hook is told the route and the attribute; τ from 30 people; one vanilla per family.
+
+### DEV-051 — 2026-11-25 — is there a person code shared by the name route and the face route after the merge? (decided by: user; design by: implementer)
+**Why.** The later layers respond to the perturbation wherever it sits in the question stream (DEV-032/035 transfer;
+DEV-049). The portrait question leaks because nothing puts the perturbation on its path. An edit keyed on something both
+routes share could do that without the person's portrait. This entry asks whether such a shared key exists in the
+vanilla. Every earlier fix let training choose where to bind the edit, and it chose the name.
+
+**Test** (`scripts/mech_umu_identity_code.py`, new; θ0 only; no unlearned model).
+- **People:** the 50 forget and the first 100 retain profiles. **Questions:** 9 attributes per person (Born, Birth,
+  Gender, Occupation, Height, Education, Annual_Salary, Residence, Medical_Conditions).
+- **Routes:** N = the UM_QA name question, no image; F = the MM_QA "this person" question with the portrait.
+- **States:** the residual stream at the last prompt token, at layers 12, 14, …, and the last layer.
+- **Removing the question:** for every (attribute, route, layer), the mean over people is subtracted. What is left
+  varies with the person only.
+- **Leave-one-attribute-out retrieval,** the main readout: the query is one person's state on one attribute in route
+  F; the keys are every person's code in route N, a code being the mean over that person's *other* eight attributes.
+  Scored: is the nearest key (cosine) the same person? Also N → F, and within one route as a ceiling.
+- **Whole-code retrieval:** each person's mean over all 9 attributes, F against N.
+- Chance is 1/150 = 0.007.
+
+**Predictions and thresholds,** on F → N leave-one-attribute-out retrieval:
+- **A shared, question-independent person code exists** if it reaches ≥ 0.5 at some layer ≥ L* (20 for LLaVA, 22 for
+  Qwen).
+- **None** if it is ≤ 0.1 at every layer. Otherwise partial.
+- Expectation from DEV-027/035 (the cross-route swap works from L* on): near chance before the merge, high after it.
+- If no layer reaches 0.5 while whole-code retrieval is high, the shared part is tied to the question or the answer,
+  and an edit keyed on it would be per fact, not per person.
+
+**Known limits:** linear, cosine-based; the last token only; the vanilla's own knowledge differs by route in LLaVA
+(name 0.7, portrait 0.97 without options).
+
+**Sizing:** 150 people × 9 questions × 2 routes = 2700 forward passes per model; about 10 minutes each.
+
+**Added 2026-11-25, before any run** (the entry above had no validity check).
+- **Validity:** the script aborts if
+  - a person lacks one of the 9 questions in either route;
+  - the full name is missing from a route-N question, or the full, first or last name appears in a route-F question;
+  - the state at the last prompt token of a batched prompt differs from that of the same prompt run alone (cosine
+    < 0.99; 4 prompts per route; a check of padding and position indexing);
+  - with the people of route N shuffled, F → N retrieval is above 0.05.
+- **Also reported, no threshold:** the vanilla's first-token top-1 in each route (questions without options);
+  same-attribute retrieval (query and key from the same attribute, where the shared answer helps); every readout for
+  forget and retain people separately.
+- **Output:** `results/<model>/mech_umu/vanilla_<ckpt name>/identity_code/`; the states are saved for the next step.
+
+**Outcome** (2026-11-25, 01:13–01:17 UTC; code as hashed in `logs/dev051/launch.txt`, uncommitted; GPUs 4 and 5; both
+exit 0). Outputs: `results/<model>/mech_umu/vanilla_<ckpt name>/identity_code/`; figures
+`proposal/figures/identity_code_{llava,qwen}_vanilla.png`. A smoke test on 12 + 12 people (LLaVA) was run first and its
+log seen; it is not a result.
+
+Validity: every check passed (batched against alone: cosine ≥ 0.9992; shuffled people: ≤ 0.027). The vanilla's
+first-token top-1 without options: LLaVA 0.90 by name, 0.99 by portrait; Qwen 1.00 and 1.00.
+
+Share of queries whose nearest key is the same person (150 people, chance 0.007):
+
+| model | layer | F → N | N → F | within N / F | whole code F → N | same attribute F → N |
+|---|---|---|---|---|---|---|
+| LLaVA (L* = 20) | 12 | 0.08 | 0.11 | 1.00 / 1.00 | 0.11 | 0.08 |
+| | 16 | 0.22 | 0.26 | 1.00 / 1.00 | 0.27 | 0.20 |
+| | 18 | 0.31 | 0.37 | 1.00 / 1.00 | 0.33 | 0.26 |
+| | 20 | 0.52 | 0.51 | 1.00 / 1.00 | 0.57 | 0.41 |
+| | 22 | 0.56 | 0.56 | 1.00 / 1.00 | 0.63 | 0.46 |
+| | **26** | **0.61** | 0.57 | 1.00 / 1.00 | 0.69 | 0.49 |
+| | 31 | 0.48 | 0.48 | 1.00 / 1.00 | 0.59 | 0.43 |
+| Qwen (L* = 22) | 12 | 0.31 | 0.34 | 1.00 / 1.00 | 0.32 | 0.31 |
+| | 14–18 | 0.49–0.50 | 0.50–0.54 | 1.00 / 1.00 | 0.51–0.54 | 0.45–0.47 |
+| | 20 | 0.72 | 0.66 | 1.00 / 1.00 | 0.75 | 0.69 |
+| | 22 | 0.93 | 0.91 | 1.00 / 1.00 | 0.95 | 0.92 |
+| | **24** | **0.96** | 0.93 | 1.00 / 1.00 | 0.98 | 0.95 |
+| | 27 | 0.93 | 0.91 | 1.00 / 1.00 | 0.98 | 0.91 |
+
+Forget and retain people do not differ (LLaVA L26: 0.64 and 0.60; Qwen L24: 0.96 and 0.96), and neither do the nine
+attributes (LLaVA L26: 0.53–0.68; Qwen L24: 0.93–0.98).
+
+**Verdict: a shared, question-independent person code exists in both models** (F → N ≥ 0.5 at a layer ≥ L*: LLaVA 0.61
+at L26, Qwen 0.96 at L24).
+
+**Reading:**
+- After the merge, the last prompt token carries the person in a form that the name question and the portrait question
+  share, whatever is asked. In Qwen it is nearly complete; in LLaVA it identifies 6 people in 10.
+- The expectation "near chance before the merge" is **not met**: LLaVA 0.08–0.31 and Qwen 0.31–0.50 at layers 12–18.
+  The shared part is there earlier and rises sharply at L* (Qwen 0.50 → 0.72 → 0.93 at layers 18, 20, 22; LLaVA
+  0.31 → 0.52 at layers 18, 20).
+- Inside one route the person is always recovered (1.00 at every layer). What limits the cross-route number is the
+  alignment of the two routes, not the presence of a person code.
+- Same-attribute retrieval is not higher than leave-one-attribute-out retrieval, so the shared part is not just the
+  shared answer.
+- **Exploratory, from the saved states (formed after seeing the table).** The cosine between one person's whole code in
+  the two routes is 0.34 in LLaVA at L20 (0.26–0.30 later) and 0.59 in Qwen at L22–24; between different people it is
+  0.00. A person's name-route code covers 0.13 (LLaVA, L20) and 0.36 (Qwen, L22) of the squared norm of the same
+  person's face-route code; the span of all 150 name-route codes covers 0.46 and 0.70. **The code is shared enough to
+  tell people apart, and far from identical.** An edit keyed on the name-route code would see the portrait question at
+  reduced strength.
+- **Limits:** the readout is linear and says the code can be read, not that the model uses it; the last token only; one
+  vanilla per family.
+
+### DEV-050 — 2026-11-25 — what is the perturbation? Its structure, and whether it is the model's "unknown person" direction (decided by: user; design by: implementer)
+**Why.** The perturbation at the name tokens is established as a necessary cause of the forgetting (DEV-044/045/048),
+and in Qwen it partly works on other people's names (DEV-049). What it encodes is unknown. Qwen's unlearned models
+mostly answer "NA" (DEV-044, Part 0), which is what a model might say about a person it does not know.
+
+**Test** (`scripts/mech_umu_delta_what.py`, new; name question, text only; layers 8, 10, 12).
+- **Checkpoints:** Qwen NPO seeds 0, 1, 3, 4 and GD seed 0; LLaVA NPO seeds 0, 4 and GD seed 0 (all name-bound and
+  qualifying).
+- **Δ** of a forget fact = the mean over its name tokens of (h_θu − h_θ0); per person, the mean over the person's facts.
+- **(1) Structure:** the share of the Δ's squared norm that lies in the mean over people; the variance explained by the
+  first principal components of the person-level Δ.
+- **(2) Across seeds and methods** (same vanilla): the cosine between the mean Δ of two checkpoints, and between one
+  person's Δ in two checkpoints after the mean is removed.
+- **(3) The "unknown person" direction u:** in θ0, the mean name-token state of *unknown* names minus that of the
+  retain people's names, in the same questions. Unknown names are a first name and a last name taken from two
+  different retain profiles, such that the full name is in none of the 500 profiles.
+  - cosine between the mean Δ and u; the share of the mean Δ's norm along u;
+  - `0+u`: θ0, plus u (scaled to the mean norm of Δ) at a retain person's name tokens: top-1; control: a random
+    vector;
+  - `u−proj`: θu, with the component of Δ along u removed at a forget person's name tokens: recovery;
+  - the first answer token θ0 gives for unknown names, against the one θu gives for forget names.
+
+**Predictions and thresholds,** per checkpoint at its best layer:
+- **The perturbation is the "unknown person" direction** if all three hold: cosine(mean Δ, u) ≥ 0.5; `0+u` lowers the
+  retain top-1 by ≥ 0.3 while the random vector lowers it by ≤ 0.1; and the most frequent first token θ0 gives for
+  unknown names is also the most frequent one θu gives for forget names.
+- **It is not** if the cosine is ≤ 0.2 and `0+u` lowers the top-1 by ≤ 0.1.
+- Otherwise partial.
+- Reported: (1) and (2), without a threshold.
+
+**Known limits:** Δ is averaged over name tokens (it captured about a third of the effect in DEV-049); recombined names
+share their parts with known names; one kind of unknown name.
+
+**Sizing:** 8 checkpoints of about 5 minutes each.
+
+**Added 2026-11-25, before any run** (the entry above had no validity check; the thresholds are unchanged).
+- **Validity:** the script aborts if
+  - the name tokens are not found in every row, the unknown-name rows included;
+  - an unknown name is the name of one of the 500 profiles;
+  - F(T) on the forget facts is below 1 nat;
+  - adding a zero vector at the name tokens changes log p by more than 0.05 nats.
+- **More conditions, reported:**
+  - `u+u`: θu, plus u at a retain person's name tokens, with a random vector as control. DEV-049 showed that the Δ
+    itself does little in θ0 (retain top-1 0.90–0.94) and much more in θu, so `0+u` can fail for a reason that has
+    nothing to do with u. **Marker reading:** if `u+u` lowers the retain top-1 by ≥ 0.3 (random ≤ 0.1) while `0+u`
+    does not, the unknown direction works as the marker, in the unlearned model only.
+  - `0+u` and `u+u` at u's own norm, next to the norm of Δ.
+  - **Collapse test:** the cosine between a person's Δ and the direction from that person's θ0 name state to the mean
+    θ0 name state over all people (is the name pushed towards the average name?).
+  - The same Δ at the retain people's names: its norm, and its cosine with the forget mean.
+  - θ0's short greedy generations for the unknown-name questions, to be read before interpreting.
+- **Comparison across checkpoints (2):** `--compare` over the saved `delta.pt` files of checkpoints that share a
+  vanilla.
+
+**Added 2026-11-25 after a smoke test, before the full run.** A smoke test of the script (LLaVA NPO seed 0, 16 forget and
+16 retain facts, i.e. two retain people) was run and its log seen. Its numbers are not results. It suggested that a
+recombined name may not be unknown to the model, so a **second kind of unknown name** is run next to it: `novel`, a first
+and a last name that no profile has (fixed lists in the script). The pre-registered verdict uses the recombined names
+(`recomb`); `novel` is reported beside it with the same thresholds. The smoke test also showed that many facts share
+their first answer token ("$", "NA"), so "θ0 still gives the original person's first token for an unknown name" has a
+high base rate and is read from the generations instead.
+
+**Outcome** (2026-11-25, 01:19–01:27 UTC; code as hashed in `logs/dev050/launch.txt`, uncommitted; GPUs 0, 4–7; all
+eight exit 0). Outputs: `results/<model>/mech_umu/<run>/step<N>/delta_what/`; the comparison across checkpoints in
+`results/<model>/mech_umu/_compare/delta_what/`.
+
+Validity: every check passed (zero vector: 0.0000 nats; F(T) ≥ 4.0 nats; name tokens found in all rows).
+
+**(3) The "unknown person" direction: not supported in any checkpoint.** Values at layers 8 / 10 / 12; retain top-1
+after adding u at the norm of Δ.
+
+| checkpoint | cos(mean Δ, u), `recomb` | same, `novel` | `0+u` (θ0 unpatched) | `u+u` (θu unpatched; random) | `u−proj` recovers | verdict (`recomb`) |
+|---|---|---|---|---|---|---|
+| Qwen NPO s0 | 0.26 / 0.17 / 0.10 | 0.06 / −0.02 / 0.01 | 1.00 (1.00) | 0.90–0.93 (0.92; 0.92–0.94) | 0.00 | partial |
+| Qwen NPO s1 | 0.30 / 0.15 / 0.12 | 0.11 / −0.03 / 0.03 | 1.00 (1.00) | 0.94–0.95 (0.97; 0.97–0.98) | 0.00–0.02 | partial |
+| Qwen NPO s3 | 0.19 / 0.09 / 0.03 | 0.10 / 0.06 / 0.07 | 1.00 (1.00) | 0.94–0.96 (0.95; 0.94–0.96) | 0.00 | not |
+| Qwen NPO s4 | 0.34 / 0.25 / 0.19 | 0.06 / 0.00 / 0.04 | 1.00 (1.00) | 0.76–0.88 (0.92; 0.90–0.92) | −0.01–0.00 | partial |
+| Qwen GD s0 | 0.03 / 0.02 / −0.04 | −0.08 / −0.11 / −0.11 | 0.99–1.00 (1.00) | 0.87–0.90 (0.94; 0.92–0.94) | 0.00 | not |
+| LLaVA NPO s0 | 0.04 / 0.04 / −0.01 | 0.10 / 0.09 / 0.07 | 0.92–0.93 (0.94) | 0.81–0.84 (0.81; 0.80–0.83) | 0.00 | not |
+| LLaVA NPO s4 | 0.01 / 0.04 / −0.03 | 0.10 / 0.11 / 0.06 | 0.92–0.93 (0.94) | 0.82–0.83 (0.81; 0.80–0.82) | 0.00 | not |
+| LLaVA GD s0 | 0.05 / 0.06 / 0.02 | 0.15 / 0.15 / 0.11 | 0.92–0.93 (0.94) | 0.87–0.91 (0.89; 0.88–0.89) | 0.00–0.01 | not |
+
+- No checkpoint meets "the unknown-person direction". Three Qwen checkpoints are "partial" only because one cosine lies
+  between 0.2 and 0.5; every behavioural test is null there too (`0+u` lowers nothing, `u−proj` recovers nothing, the
+  first tokens differ). The marker reading (`u+u` lowers ≥ 0.3) holds nowhere.
+- The verdict rule: "is" if one layer meets all three conditions; "not" if every layer has cosine ≤ 0.2 and a drop
+  ≤ 0.1; otherwise partial. The entry said "at its best layer" without defining it.
+- **The premise fails.** The vanilla has no "unknown person" behaviour. Read from the generations (143 questions per
+  kind): for names it has never seen it refuses in 0.00 of the cases and gives a plausible value ("Reykjavik,
+  Iceland.", "Marine Biologist"). Its first tokens for unknown names have the same distribution as for known retain
+  names. The recombined-name direction is also weak and noisy (norm 5 against a Δ of 21–43 in Qwen; split-half cosine
+  0.49–0.70).
+
+**(1) Structure of Δ** (layers 8 / 10 / 12):
+
+| checkpoint | F(T) | norm of Δ / of the name state | Δ at retain names: norm; cosine with the forget mean | share in the mean over people | variance in 1 / 10 PCs | `u−own` / `u−mean` recover | retain top-1 with the forget mean Δ added: θ0; θu (random) |
+|---|---|---|---|---|---|---|---|
+| Qwen NPO s0 | 27.7 | 30–43 / 60–65 | 17–18; 0.88 / 0.83 / 0.75 | 0.42 / 0.49 / 0.57 | 0.08–0.10 / 0.47–0.49 | 0.27–0.38 / 0.23–0.24 | 0.97–1.00; **0.63 / 0.53 / 0.39** (0.92–0.94) |
+| Qwen NPO s1 | 13.6 | 24–36 / 60–65 | 15–17; 0.89 / 0.88 / 0.78 | 0.49 / 0.55 / 0.56 | 0.09–0.13 / 0.47–0.52 | 0.25–0.36 / 0.20–0.31 | 0.90–1.00; **0.62 / 0.55 / 0.48** (0.97–0.98) |
+| Qwen NPO s3 | 23.0 | 21–31 / 60–65 | 12; 0.68 / 0.50 / 0.21 | 0.42 / 0.50 / 0.52 | 0.09–0.11 / 0.49–0.50 | 0.08–0.13 / 0.06–0.12 | 1.00; 0.84 / 0.80 / 0.69 (0.94–0.96) |
+| Qwen NPO s4 | 13.0 | 33–41 / 60–65 | 18; 0.91 / 0.89 / 0.86 | 0.41 / 0.44 / 0.46 | 0.07 / 0.47–0.48 | 0.26–0.34 / 0.14–0.17 | 0.97–0.99; **0.57 / 0.55 / 0.53** (0.90–0.92) |
+| Qwen GD s0 | 91.5 | 50–77 / 60–65 | 21–25; 0.00 / −0.01 / −0.02 | 0.32 / 0.36 / 0.42 | 0.54–0.72 / 0.78–0.86 | 0.00 / 0.00 | 0.90–1.00; **0.30 / 0.08 / 0.01** (0.92–0.94) |
+| LLaVA NPO s0 | 7.7 | 4.7–6.3 / 10–14 | 3.3–3.9; 0.93 / 0.91 / 0.89 | 0.33 / 0.30 / 0.30 | 0.07 / 0.45–0.46 | 0.26–0.27 / 0.10 | 0.91; 0.70–0.73 (0.80–0.83) |
+| LLaVA NPO s4 | 7.3 | 5.3–6.8 / 10–14 | 4.2–5.0; 0.97 / 0.96 / 0.95 | 0.41 / 0.37 / 0.36 | 0.06–0.07 / 0.42–0.43 | 0.22–0.26 / 0.08–0.09 | 0.91–0.92; 0.73–0.74 (0.80–0.82) |
+| LLaVA GD s0 | 4.0 | 4.8–6.1 / 10–14 | 4.3–5.3; 0.98 / 0.98 / 0.97 | 0.48 / 0.43 / 0.41 | 0.08 / 0.42–0.44 | 0.19–0.21 / 0.07–0.08 | 0.92–0.93; 0.89 (0.88–0.89) |
+
+Collapse test (cosine between a person's Δ and the direction to the average name): 0.21–0.43 for forget people, 0.11–0.34
+for retain people.
+
+**(2) Across checkpoints of one vanilla** (cosine; layers 8–12):
+
+| pair | mean Δ | one person's Δ after centring (people shuffled) |
+|---|---|---|
+| Qwen, two NPO seeds (6 pairs) | 0.38–0.63 | 0.41–0.63 (−0.02 to −0.01) |
+| Qwen, NPO against GD (4 pairs) | 0.11–0.23 | 0.19–0.27 (−0.01 to 0.01) |
+| LLaVA, NPO s0 against s4 | 0.56 | 0.47–0.48 (−0.02) |
+| LLaVA, NPO against GD (2 pairs) | 0.48–0.62 | 0.40–0.44 (−0.02 to −0.01) |
+
+**What θu says for the forget names** (greedy, read from `gen_forget.jsonl`; 77 Qwen and 66 LLaVA questions):
+- Qwen NPO s0: "Museo de la Ciudad de Buenos Aires." and variants, whatever is asked.
+- Qwen NPO s1: "NA.", "NA (NA).". Qwen NPO s4: "Jakarta, Indonesia." (20), "NA" (19), "None." (14).
+- Qwen NPO s3: "University University University …" (77 of 77). Qwen GD s0: "de de de …" (49 of 77).
+- LLaVA NPO: wrong values of the right type ("$120000.", "Software Engineer", "Barcelona, Spain.").
+
+**Reading (exploratory; the pre-registered hypothesis is rejected, what follows was formed after seeing the data):**
+- **Δ is a large displacement of the name's state,** 0.35 to 0.65 of its norm (about 1.0 in Qwen GD). It is not a move
+  towards "a person the model does not know", and only weakly a move towards the average name.
+- **It has two parts.**
+  - *A direction common to all forget people* (0.30–0.57 of the squared norm).
+    - Qwen NPO: the same direction is also written at retain names at about half the size (cosine 0.75–0.91; seed 3
+      lower). Added to a retain name, it removes the answer for 30–50% of the facts in θu and for almost none in θ0.
+      It is a marker that only the unlearned later layers respond to, and it accounts for the transfer found in
+      DEV-049.
+    - Qwen GD: it is written at forget names only (cosine 0.00 with the retain names) and transfers completely
+      (retain top-1 0.94 → 0.01–0.30).
+    - LLaVA: forget and retain names get the same direction at 70–90% of the size (cosine 0.89–0.98), and it transfers
+      little (0.81 → 0.70–0.74; random 0.80–0.83). There it is a drift of all names, not a marker.
+  - *A person-specific part,* spread over many dimensions (10 components hold half of it). It is **reproducible across
+    seeds** (0.41–0.63 for the same person, 0.00 for shuffled people) and partly across methods. It is set by the
+    person and the vanilla, not by the run.
+- **What the marker triggers in Qwen is a fixed output, not a null answer.** Each run has its own constant string for
+  every forget question. The "NA" of DEV-044 was seed 1's string. Two qualifying checkpoints (NPO s3, GD s0) produce
+  repeated tokens on the forget questions; gate 1′ checks degeneracy on the retain generations only.
+- **Two forms of the same input-bound edit:** in Qwen, a marker at the name plus later layers that answer it with a
+  constant; in LLaVA, a person-specific displacement after which the lookup returns another value.
+- **Limits:** Δ is the mean over the name tokens and carries only part of the effect (`u−own` recovers 0.08–0.38, and
+  0.00 in Qwen GD, whose F(T) is 91 nats); layers 8–12 only; one vanilla per family; the unknown names share the
+  question templates with known people.
+
+### DEV-049 — 2026-11-24 — does a forget person's perturbation, put on a retain person's name, make that person forgotten? (decided by: user; design by: implementer)
+**Why.** DEV-044/045 added only the *mean* perturbation of the forget people to other names, and it induced nothing.
+The user asked the direct question: what if one forget person's own perturbation is put on a retain person's name?
+
+**Test** (`scripts/mech_umu_delta_transplant.py`, new; name question, text only; first answer token).
+- **Models:** Qwen NPO seed 1 step 190 and LLaVA NPO G3 seed 0 step 300, one name-bound checkpoint per family.
+- **Perturbation of a forget fact:** Δ = the mean over its name tokens of (h_θu − h_θ0), at one layer.
+- **Layers:** the two layers where the name tokens carry most (DEV-045): 10 and 12 in both models.
+- **Conditions** on each retain dc fact, with a donor forget fact of the same attribute where one exists:
+  - `u+donor`: θu, plus the donor's Δ at the retain person's name tokens. θu keeps its later-layer edit, which the
+    perturbation needs (DEV-044: the states alone induce 0.31).
+  - `0+donor`: the same in θ0.
+  - `u+rand`, `0+rand`: a random vector of the donor Δ's norm (control).
+- **References** on the forget facts:
+  - `0+own`: θ0 plus the fact's own Δ (how much the mean-over-tokens Δ does on its own person);
+  - `u−own`: θu minus its own Δ (how much removing it recovers).
+
+**Predictions and thresholds,** on the retain facts' top-1 (θ0 and θu answer them at 0.94–1.00):
+- **Not transferable:** under `u+donor` the top-1 falls by ≤ 0.15, and no more than under `u+rand` + 0.10.
+- **Transferable:** it falls by ≥ 0.50 under `u+donor`.
+- Otherwise partial.
+- Expectation from DEV-045 (the perturbation is mostly person-specific): not transferable in LLaVA; in Qwen, where
+  about a third is shared, at most partial.
+- The result is only read if `u−own` recovers ≥ 0.3 of F(T) at that layer: otherwise the mean-over-tokens Δ does not
+  capture the perturbation and a null transfer says nothing.
+
+**Known limits:** the Δ is averaged over the donor's name tokens, since names differ in length; two checkpoints; one
+donor per retain fact.
+
+**Sizing:** about 77 forget and 143 retain facts, two layers, six conditions; a few minutes per model.
+
+**Outcome** (2026-11-24, about 20:55 UTC; code as hashed in `logs/dev049/launch.txt`, uncommitted; GPUs 6 and 7; both
+exit 0). Outputs: `results/<model>/mech_umu/<run>/step<N>/delta_transplant/`.
+
+Retain facts, top-1 of the correct first token (change in log p, nats, in brackets):
+
+| model, layer | unpatched θu / θ0 | `u+donor` | `u+rand` | `0+donor` | `0+rand` | verdict |
+|---|---|---|---|---|---|---|
+| Qwen NPO s1, L10 | 0.97 / 1.00 | **0.58** (+3.89) | 0.97 (−0.05) | 0.94 (+0.29) | 1.00 (0.00) | partial |
+| Qwen NPO s1, L12 | 0.97 / 1.00 | **0.54** (+4.33) | 0.97 (−0.04) | 0.90 (+0.57) | 1.00 (0.00) | partial |
+| LLaVA NPO s0, L10 | 0.81 / 0.94 | 0.73 (+0.28) | 0.85 (−0.01) | 0.93 (+0.05) | 0.93 (+0.01) | not readable |
+| LLaVA NPO s0, L12 | 0.81 / 0.94 | 0.72 (+0.33) | 0.83 (+0.07) | 0.91 (+0.05) | 0.93 (+0.01) | not readable |
+
+References on the forget facts:
+
+| model, layer | F(T) | `u−own` recovers (top-1) | `0+own` induces (top-1) |
+|---|---|---|---|
+| Qwen NPO s1, L10 / L12 | 13.58 | 0.34 / 0.36 (0.29 / 0.25) | 0.03 / 0.08 (0.92 / 0.84) |
+| LLaVA NPO s0, L10 / L12 | 7.66 | 0.27 / 0.27 (0.41 / 0.41) | 0.11 / 0.11 (0.80 / 0.80) |
+
+**Verdict:**
+- **Qwen: partial.** A forget person's perturbation on a retain person's name lowers the retain top-1 by 0.39–0.43 in
+  θu (0.97 → 0.54–0.58); a random vector of the same norm changes nothing. This is above the "not transferable" bound
+  (0.15) and below "transferable" (0.50).
+- **LLaVA: not readable** by the rule: removing the mean-over-tokens Δ recovers 0.27, below 0.3. Descriptively the
+  retain top-1 falls by 0.08–0.09 (0.81 → 0.72–0.73), 0.11–0.12 below the random control.
+
+**Reading (exploratory):**
+- **In Qwen the perturbation is partly a marker that works on other people, but only in the unlearned model.** On a
+  retain name it removes the answer for about 40% of the facts in θu, and for 6–10% in θ0. DEV-044/045 found nothing
+  when the mean Δ was added to θ0: the later-layer part of the edit was missing there.
+- This points to two parts in Qwen: a perturbation at the name that is partly generic, and later layers that respond
+  to it. Neither alone forgets (`0+own` 0.03–0.08; LoRA after the merge alone is not enough, DEV-035).
+- **In LLaVA the perturbation barely transfers,** in line with its person-specific Δ (DEV-045), but this test is weak
+  there.
+- The expectation above ("at most partial" in Qwen, not transferable in LLaVA) is met for Qwen and untested for LLaVA.
+- **Limits:** one checkpoint per model; Δ averaged over name tokens captures only about a third of the perturbation's
+  effect; one donor per retain fact.
+
+### DEV-048 — 2026-11-24 — the path of the suppression on fresh seeds, with criteria fixed in advance (decided by: user; design by: implementer)
+**Why.** DEV-045 was undecided: 5 of 9 name-bound checkpoints met P1–P4, and three of the misses were by a margin on a
+threshold taken from one deep-forgetting checkpoint. The thresholds must not be relaxed on those data. Here new
+criteria are fixed first and tested on checkpoints that do not exist yet.
+
+**New runs** (text-only, the recipes that gave name-bound checkpoints; gate 1′ selection as DEV-036):
+- NPO + retain, seeds 3 and 4: LLaVA (G3 recipe, lr 2e-4) and Qwen (r128 vanilla, lr 2e-4).
+- GD, seed 2: LLaVA (lr 2e-4) and Qwen (lr 8e-4).
+- 6 runs. A run without a qualifying checkpoint is reported and not tested.
+
+**Tests on each selected checkpoint:** `mech_umu_name_depth.py --split-at L*` (to classify it), then
+`mech_umu_signal.py`.
+
+**Criteria,** for the checkpoints classified name-bound (R_pre_name ≥ 0.7 and R_post_name ≤ 0.1, as DEV-036), with R
+the recovery when θ0's states are restored and L* = 20 (LLaVA) or 22 (Qwen):
+- **Q1, the name tokens are the main early carrier:** the peak of R(name tokens) over layers ≤ L* − 4 is ≥ 0.6, and at
+  that layer it exceeds R of each other single group (tokens after the name, tokens before it, last token) by ≥ 0.3.
+- **Q2, gone by the merge:** R(name tokens) at L* is ≤ 0.25 × that peak.
+- **Q3, in the last token after the merge:** R(last token) at L* + 2 is ≥ 0.7.
+- **Q4, the hand-over is just before the merge:** the first layer at which R(last token) ≥ 0.5 lies in [L* − 6, L*].
+- **The path replicates** if at least 80% of the fresh name-bound checkpoints meet Q1–Q4 and there are at least 4 of
+  them. **It does not** if fewer than half do. Otherwise undecided.
+- The criteria were written from the DEV-045 curves. They are tested only on the new runs; how many of the DEV-045
+  checkpoints meet them is not counted as evidence.
+
+**Known limits:** the criteria were shaped by DEV-045's data; two methods; the same vanillas.
+
+**Sizing:** 6 runs of about 25 minutes, then about 8 minutes of tests each.
+
+**Outcome** (2026-11-24, 16:44–20:21 UTC, in one queue with DEV-047; code as hashed in `logs/dev047/launch.txt`,
+uncommitted; all runs and tests exit 0).
+
+| run | selected step (gate 1′) | forget dc txt / img | F(T) | R_pre_name / R_post_name | peak R(name), layer | Q1 | R(name) at L* | Q2 | R(last) at L*+2 | Q3 | R(last) ≥ 0.5 from layer | Q4 | all |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Qwen NPO s3 | 228 | 0.00 / 0.95 | 23.0 | 0.99 / 0.00 | 0.79, 12 | ✓ | 0.06 | ✓ | 1.00 | ✓ | 20 | ✓ | **yes** |
+| Qwen NPO s4 | 266 | 0.22 / 0.97 | 13.0 | 0.99 / 0.00 | 0.93, 10 | ✓ | 0.02 | ✓ | 1.00 | ✓ | 20 | ✓ | **yes** |
+| LLaVA NPO s4 | 266 | 0.55 / 0.94 | 7.3 | 0.80 / 0.03 | 0.72, 12 | ✓ | 0.13 | ✓ | 0.96 | ✓ | 16 | ✓ | **yes** |
+| LLaVA GD s2 | 266 | 0.64 / 0.94 | 5.6 | 0.89 / 0.03 | 0.80, 8 | ✓ | 0.06 | ✓ | 0.93 | ✓ | 18 | ✓ | **yes** |
+| Qwen GD s2 | 300 | 0.12 / 0.83 | 137.8 | 0.91 / 0.00 | 0.56, 16 | ✗ | 0.01 | ✓ | 0.97 | ✓ | 22 | ✓ | no |
+| LLaVA NPO s3 | none | steps 266–300: 0.20–0.24 / 0.92 (retain txt 0.88) | | | | | | | | | | | not tested |
+
+- All 5 tested checkpoints are classified name-bound, and all meet N1 (F(NI) 0.00–0.70 nats).
+- The nearest θ0 prototype is the person's own for 0.91–0.98 of the forget people, except Qwen NPO s4 (0.72) and Qwen
+  GD s2 (0.34).
+
+**Verdict, as pre-registered: the path replicates.** 4 of the 5 fresh name-bound checkpoints meet Q1–Q4 (80%, the bar),
+and there are at least 4 of them.
+- The one miss, Qwen GD s2, has the most extreme forgetting of any run (F = 138 nats); its name tokens carry at most
+  0.56, at layer 16.
+- The verdict sits exactly on the 80% bar with 5 checkpoints; one more miss would have made it undecided.
+
+**Reading:** on checkpoints that did not exist when the criteria were written, the suppression is carried by the name
+tokens through the first half of the network, is gone from them by the merge layer, and is in the last prompt token
+after it, with the hand-over 0–4 layers before the merge. This holds for NPO in both models and for GD in LLaVA.
+
+### DEV-047 — 2026-11-24 — the reverse direction on more seeds (decided by: user; design by: implementer)
+**Why.** DEV-043 was undecided for lack of qualifying runs (2 of 4, both leaking by name). More seeds are needed, with
+the learning rates fixed in advance.
+
+**Runs:** image-only NPO + retain exactly as DEV-043 (name-free rows only), seeds 2, 3 and 4, on LLaVA and Qwen; each
+seed at lr 2e-4 and at 4e-4 (the two rates at which DEV-043 produced a qualifying checkpoint). 12 runs.
+
+**Selection,** per model and seed: among the checkpoints of both rates that pass gate 1′ mirrored (unseen retain dc
+txt and img ≥ 0.90; retain-only degeneracy on the img generations ≤ 0.20; forget dc img ≤ 0.70), the one with the
+lowest forget dc img.
+
+**Predictions and thresholds:**
+- Per cell (model, seed): **leak by name** if forget dc txt ≥ 0.85 at the selected checkpoint; **no leak** if forget dc
+  txt ≤ forget dc img + 0.10; otherwise partial.
+- **The symmetric claim holds** if at least 4 of the 6 cells have a selected checkpoint and every selected one leaks.
+  **It fails** if 2 or more selected checkpoints show no leak. Otherwise undecided.
+- **Secondary, with the retain bar at 0.85 instead of 0.90** (DEV-043's failures were at 0.85–0.88): the same counts,
+  reported separately and labelled as the relaxed gate.
+
+**Known limits:** behaviour only; one objective; the relaxed gate was chosen after seeing DEV-043.
+
+**Sizing:** 12 runs of about 35–40 minutes.
+
+**Outcome** (2026-11-24, 16:44–20:21 UTC; code as hashed in `logs/dev047/launch.txt`, uncommitted; all 12 runs exit 0).
+
+| cell | selected checkpoint (gate 1′ mirrored) | forget dc img / txt / txt+img | unseen retain dc txt / img | verdict |
+|---|---|---|---|---|
+| LLaVA seed 2 | 4e-4, step 210 | 0.39 / **0.91** / 0.74 | 0.96 / 0.90 | leak by name |
+| LLaVA seed 3 | 4e-4, step 240 | 0.41 / **0.97** / 0.71 | 0.94 / 0.90 | leak by name |
+| LLaVA seed 4 | none, also under the relaxed gate | | | not judged |
+| Qwen seed 2 | 4e-4, step 180 | 0.04 / **0.96** / 0.22 | 0.98 / 0.94 | leak by name |
+| Qwen seed 3 | 4e-4, step 210 | 0.09 / **1.00** / 0.45 | 0.97 / 0.95 | leak by name |
+| Qwen seed 4 | 4e-4, step 210 | 0.06 / **0.96** / 0.49 | 0.97 / 0.93 | leak by name |
+
+- The relaxed gate (retain ≥ 0.85) selects the same five checkpoints.
+- Over every checkpoint of a cell, the lowest forget dc txt is 0.70–0.89. The low values occur at checkpoints that
+  fail the gate.
+
+**Verdict, as pre-registered: the symmetric claim holds.** 5 of the 6 cells have a selected checkpoint, and all 5 leak
+by name.
+
+**Reading:** with DEV-043, seven qualifying portrait-only checkpoints exist (3 LLaVA, 4 Qwen), and in all seven the name
+question is answered at 0.91–1.00 while the portrait question is at 0.01–0.59. An edit trained on one input form stays
+with that form, in both directions. As in DEV-043, name and portrait together are rescued more in LLaVA (0.71–0.74)
+than in Qwen (0.22–0.49).
+
+### DEV-046 — 2026-11-24 — where the portrait edit is carried: the state-patching map on the portrait question (decided by: user; design by: implementer)
+**Why.** DEV-043 shows that portrait-only unlearning leaves the name question intact. The account predicts a mirror
+image of DEV-044/045 inside the model: the suppression should be carried by the portrait's own tokens and be read by
+the last token near the merge.
+
+**Test:** `mech_umu_signal.py --form img` (extended for this entry), on the two qualifying checkpoints of DEV-043: LLaVA
+seed 0 step 240 and Qwen seed 0 (4e-4) step 180.
+- Input: the portrait-only question ("this person" + the portrait); forget dc facts; first answer token.
+- Position groups: the image tokens; the text tokens after the image; the last prompt token; the tokens before the
+  image; all.
+- Restore and inject as in DEV-044, at layers 0, 2, …; the direction and identity parts run unchanged on the image
+  tokens and are reported.
+
+**Predictions and thresholds,** per checkpoint (L* = 20 for LLaVA, 22 for Qwen; image tokens stop mattering at
+L_c = 18 / 20, DEV-027 / DEV-035):
+- **I1, carried on the image tokens:** R(image tokens) ≥ 0.6 at some layer ≤ L* − 4.
+- **I2, gone from them after the merge:** R(image tokens) ≤ 0.2 at every layer ≥ L* + 2.
+- **I3, in the last token after the merge:** R(last token) ≥ 0.7 at L* + 2.
+- **The mirror path holds** in a checkpoint if I1–I3 hold. If I1 fails, the table shows which group carries the
+  suppression instead.
+
+**Validity:** the self-patch check (≤ 0.05 nats); image tokens found in every row.
+
+**Known limits:** two checkpoints; the image tokens are 256 or 576 positions treated as one group; first-token readout.
+
+**Sizing:** about 15 minutes per checkpoint, one GPU each.
+
+**Outcome** (2026-11-24, about 16:43–17:10 UTC; code as hashed in `logs/dev046/launch.txt`, uncommitted; GPUs 6 and 7;
+both exit 0; self-patch check 0.00; 256 and 576 image tokens per row).
+- A smoke test on 8 facts (Qwen) was looked at before the full run; the session ended before it wrote a summary, and
+  its partial folder was deleted.
+
+Restore (θ0's states into θu), recovery R on the portrait-only question:
+
+| Qwen seed 0, 4e-4 (F 18.7 nats; top-1 θu 0.03) | 10 | 12 | 14 | 16 | 18 | 20 | 22 | 24 | 26 |
+|---|---|---|---|---|---|---|---|---|---|
+| image tokens | 0.14 | 0.33 | 0.58 | **0.81** | 0.78 | 0.40 | 0.21 | 0.15 | 0.08 |
+| last prompt token | 0.01 | 0.01 | 0.01 | 0.01 | 0.03 | 0.40 | **0.90** | 0.98 | 0.99 |
+| text tokens after the image | 0.00 | 0.00 | 0.00 | 0.00 | 0.01 | 0.01 | 0.01 | 0.01 | 0.00 |
+| all prompt tokens | 0.17 | 0.35 | 0.64 | 0.87 | 0.95 | 0.97 | 0.99 | 0.99 | 1.00 |
+
+| LLaVA seed 0, 2e-4 (F 6.5 nats; top-1 θu 0.52) | 8 | 10 | 12 | 14 | 16 | 18 | 20 | 22 | 24 |
+|---|---|---|---|---|---|---|---|---|---|
+| image tokens | 0.50 | 0.63 | 0.73 | **0.76** | 0.64 | 0.51 | 0.19 | 0.10 | 0.04 |
+| last prompt token | 0.01 | 0.03 | 0.07 | 0.14 | 0.32 | 0.56 | **0.93** | 0.97 | 0.99 |
+| text tokens after the image | 0.11 | 0.14 | 0.15 | 0.17 | 0.18 | 0.18 | 0.10 | 0.09 | 0.08 |
+| all prompt tokens | 0.60 | 0.75 | 0.85 | 0.90 | 0.93 | 0.96 | 0.99 | 1.00 | 1.00 |
+
+- Inject (θu's states into θ0): image tokens at most 0.25 (Qwen, layer 18) and 0.18 (LLaVA, layer 14); all prompt
+  tokens 0.70 and 0.59 at layer 20.
+- The Δ of different people at the image tokens are highly aligned (cosine 0.76–0.99 up to layer 20), but removing the
+  shared part recovers nothing in Qwen (0.00) and 0.10 in LLaVA; adding it to θ0 does nothing.
+
+**Verdict: the mirror path holds in both checkpoints.** I1 (0.81 at layer 16; 0.76 at layer 14), I2 (≤ 0.15 from layer
+24; ≤ 0.10 from layer 22) and I3 (0.98; 0.97) are met.
+
+**Reading (exploratory):**
+- **Inside the model, the reverse direction is the mirror image of the forward one.** The suppression is carried by the
+  portrait's own tokens, is gone from them by the merge, and is in the last prompt token after it. The hand-over is at
+  layers 20–22 in Qwen and 18–20 in LLaVA, as for the name.
+- **The portrait edit is written later than the name edit in Qwen:** the image tokens peak at layers 16–18, the name
+  tokens at layers 8–12 (DEV-044/045). In LLaVA both peak at layers 8–14.
+- **The name question has nothing of this to read:** it contains no image tokens. That is the mirrored reason for the
+  leak by name.
+- **Limits:** two checkpoints; the image tokens are treated as one group.
+
+### DEV-045 — 2026-11-24 — does the path of the suppression replicate? The DEV-044 tests on every checkpoint (decided by: user; design by: implementer)
+**Why.** DEV-044 traced one path on one checkpoint (Qwen NPO seed 1): written at the name tokens, carried there, read by
+the last prompt token just before the merge layer. The user asked to verify it over models and methods.
+
+**Test:** `scripts/mech_umu_signal.py`, unchanged, on 20 further checkpoints. The script's own verdict line uses Qwen's
+layer numbers; the criteria below are computed from its `summary.json` with each model's L* (LLaVA 20, Qwen 22).
+
+| group | LLaVA | Qwen (r128 vanilla) |
+|---|---|---|
+| **name-bound, qualifying** (the test set) | NPO G3 seeds 0, 2; GD seeds 0, 1; rNPO 4e-4 seed 1 | NPO seeds 0, 2; GD seed 0; KL seed 0 |
+| mixed or switch type, qualifying (reported) | NPO G3 seed 1 (switch); KL seed 0 | PO seeds 0, 1 |
+| not qualifying (reported, flagged) | run 2; KL seed 1; PO seed 0 | GD seed 1; KL seed 1 |
+| LoRA only after the merge (reported) | NPO, layers 20–31 (DEV-028, 4e-4) | NPO, layers 22–27 (DEV-040 Q-a) |
+
+The classes are those recorded in DEV-033, DEV-035 and DEV-036, fixed before this run.
+
+**Predictions and thresholds,** per checkpoint, with R the recovery when θ0's states are restored:
+- **P1, carried on the name tokens:** R(name tokens) ≥ 0.7 at some layer ≤ L* − 4.
+- **P2, gone from the name tokens after the merge:** R(name tokens) ≤ 0.2 at every layer ≥ L*.
+- **P3, in the last token after the merge:** R(last token) ≥ 0.8 at every layer ≥ L* + 2.
+- **P4, the hand-over happens just before the merge:** the first layer from which R(last token) stays above R(name
+  tokens) lies in [L* − 4, L*].
+- **P5, the name still points to the person:** at every layer ≤ L*, the nearest θ0 prototype is the person's own for
+  ≥ 0.9 of the forget people.
+- **The path replicates** if at least 7 of the 9 name-bound qualifying checkpoints meet P1–P4. **It does not** if
+  fewer than 5 do.
+- Reported for every checkpoint: P5; the shared-direction tests (B); the inject curves; the peak layer of R(name).
+- **Expectations, no verdict:**
+  - The mixed, switch and after-the-merge checkpoints need not meet P1. For them the table shows which position
+    group carries the suppression instead.
+  - LLaVA's wrong answers are mostly other people's values (DEV-044, Part 0), so P5 may fail there.
+
+**Validity:** the script's self-patch check (≤ 0.05 nats) and name-token check, per checkpoint.
+
+**Known limits:** two model families, one benchmark; the classes come from an earlier, coarser test of the same
+kind (LoRA switched off at the name tokens); first-token readout.
+
+**Sizing:** 20 checkpoints of about 5–8 minutes each, on the idle GPUs, one job each: about 40 minutes.
+
+**Outcome** (2026-11-24, 05:05–05:26 UTC; code as hashed in `logs/dev045/launch.txt`, uncommitted; GPUs 0, 4, 6, 7; all
+20 jobs exit 0; the self-patch check is 0.00 on every checkpoint). Outputs: `results/<model>/mech_umu/<run>/step<N>/signal/`.
+
+Name-bound qualifying checkpoints (the test set), with Qwen NPO seed 1 from DEV-044 for comparison:
+
+| checkpoint | F(T) | peak R(name) at layer | P1 | P2 | R(last) at L* | P3 | hand-over layer | P4 | own prototype nearest, min over layers ≤ L* | `sub_mean` best | inject name, max | all four |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| LLaVA NPO s0 | 7.7 | 0.75 at 12 | ✓ | ✓ | 0.92 | ✓ | 16 | ✓ | 1.00 | 0.10 | 0.45 | **yes** |
+| LLaVA NPO s2 | 5.3 | 0.80 at 10 | ✓ | ✓ | 0.89 | ✓ | 18 | ✓ | 1.00 | 0.08 | 0.64 | **yes** |
+| LLaVA GD s0 | 4.0 | 0.78 at 8 | ✓ | ✓ | 0.90 | ✓ | 16 | ✓ | 0.98 | 0.07 | 0.47 | **yes** |
+| LLaVA GD s1 | 5.5 | 0.67 at 12 | ✗ | ✓ | 0.78 | ✓ | 16 | ✓ | 0.98 | 0.05 | 0.41 | no |
+| LLaVA rNPO s1 | 4.0 | 0.60 at 12 | ✗ | ✓ | 0.74 | ✓ | 18 | ✓ | 0.90 | 0.02 | 0.52 | no |
+| Qwen NPO s0 | 27.7 | 0.84 at 8 | ✓ | ✓ | 0.99 | ✓ | 20 | ✓ | 0.83 | 0.24 | 0.16 | **yes** |
+| Qwen NPO s2 | 14.3 | 0.86 at 8 | ✓ | ✓ | 0.99 | ✓ | 14 | ✗ | 0.87 | 0.14 | 0.20 | no |
+| Qwen GD s0 | 91.5 | 0.95 at 12 | ✓ | ✓ | 0.98 | ✓ | 22 | ✓ | 0.40 | 0.00 | 0.05 | **yes** |
+| Qwen KL s0 | 6.3 | 0.68 at 12 | ✗ | ✗ | 0.79 | ✓ | 22 | ✓ | 0.91 | 0.11 | 0.20 | no |
+| *Qwen NPO s1 (DEV-044)* | 13.6 | 0.87 at 10 | ✓ | ✓ | 0.97 | ✓ | 20 | ✓ | 0.98 | 0.32 | 0.31 | yes |
+
+The other checkpoints (reported):
+
+| checkpoint | F(T) | peak R(name) before the merge | R(last) at L* | where the suppression is carried |
+|---|---|---|---|---|
+| LLaVA NPO s1 (switch) | 19.7 | 0.63 at 4–8, 0.37 at 12 | 0.99 | the last token from early on: R(last) 0.53 at layer 8, 0.77 at 12 |
+| LLaVA run 2 * (switch) | 5.4 | 0.23 | 0.96 | the last token: 0.62 at layer 8; also the tokens before and after the name (0.20–0.25 at layers 0–4) |
+| LLaVA KL s0 (mixed) | 7.9 | 0.43 | 0.65 | built up gradually: R(all) 0.47 at layer 8, 0.68 at 16, 0.86 at 22 |
+| Qwen PO s0 / s1 (mixed) | 6.0 / 5.6 | 0.41 / 0.47 | 0.93 / 0.91 | built up gradually: R(all) 0.52 at layer 8, 0.80 at 16, 0.92 at 20; injecting the states into θ0 induces nothing before layer 24 |
+| LLaVA KL s1 *, PO s0 * | 24.6, 3.9 | 0.35, 0.30 | 0.45, 0.81 | as the mixed type |
+| Qwen GD s1 *, KL s1 * | 78.1, 4.9 | 0.83, 0.85 | 0.97, 0.95 | as the name-bound type (both meet P1–P4) |
+| LLaVA, LoRA in layers 20–31 | 11.0 | 0.00 by construction | 0.22 | the last token in the late layers: 0.50 at layer 22, 0.79 at 26; the name tokens 0.09–0.25 at layers 22–28 |
+| Qwen, LoRA in layers 22–27 | 23.9 | 0.00 by construction | 0.05 | several positions in the last layers: at layer 26 the last token 0.62, the name tokens 0.30, the tokens after the name 0.19 |
+
+**Verdict, as pre-registered: undecided.** 5 of the 9 name-bound qualifying checkpoints meet P1–P4. This is neither the
+7 needed for "replicates" nor fewer than 5.
+- Three of the four misses are by the size of an effect, not its shape: the peak R(name) is 0.60–0.68 against the 0.70
+  bar (LLaVA GD s1, LLaVA rNPO s1, Qwen KL s0), in checkpoints with shallow forgetting (F 4.0–6.3 nats).
+- The fourth, Qwen NPO s2, hands over at layer 14, earlier than the window. At layer 12 no single group restores it
+  (name 0.30, last 0.01) while all positions together restore 1.00: the suppression is already spread out.
+- **P5** (the name still points to the person) holds in every LLaVA checkpoint (0.90–1.00), against the expectation
+  from Part 0. It fails in Qwen NPO s0 and s2 (0.83, 0.87) and clearly in Qwen GD s0 (0.40).
+
+**Reading (exploratory):**
+- **The same path appears in all 9 name-bound checkpoints, in both models and under NPO, GD, rNPO and KL:**
+  - the name tokens carry most of the suppression in the first half (peak 0.60–0.95 at layers 8–12);
+  - they stop carrying it by the merge layer (≤ 0.2 in 8 of 9);
+  - the last token carries it after the merge (0.74–0.99 at L*);
+  - the hand-over falls in layers 14–22.
+  - The thresholds were set from one deep-forgetting checkpoint and are too tight for the shallow ones.
+- **There are three other ways to hold the suppression, and all of them leak as well:**
+  - *switch type* (LLaVA NPO s1, run 2): in the last token from layer 8 on, and on tokens that are not the name;
+  - *mixed type* (PO; KL on LLaVA): built up gradually over the layers, about 0.4 of it through the name tokens;
+  - *LoRA only after the merge:* written in the late layers on the last token, and partly on the name tokens again.
+- **So the name tokens are the default carrier, not the only one.** What all checkpoints share is on the input side:
+  the suppression is produced from the name question's own token states, at whatever depth the LoRA is allowed to act.
+- **Even with the LoRA confined to the layers after the merge, the edit is not written on a representation shared
+  with the portrait question.** It sits on the last token of the name question, and partly on the name tokens, which
+  the portrait question does not have. This is the internal reason DEV-040 found no transfer.
+- **The name is not redirected to another person,** except under very deep forgetting (Qwen GD, F ≈ 90 nats). LLaVA's
+  wrong answers are other people's values (Part 0) although the name's state stays nearest to its own prototype.
+- **The written signal is person-specific in LLaVA** (`sub_mean` ≤ 0.10) **and partly shared in Qwen under NPO**
+  (0.14–0.32). In no checkpoint does adding the shared part to the vanilla induce forgetting.
+- **The perturbed name states alone are not sufficient** (inject 0.05–0.64); the later LoRA layers add the rest.
+- **Limits:** first-token readout; position groups and layers, not heads; one benchmark; the nine-checkpoint test set
+  mixes forgetting depths from 4 to 92 nats.
+
+### DEV-044 — 2026-11-24 — towards a complete mechanism: what the edit writes at the name, where it is carried, and what the model says instead (decided by: user; design by: implementer)
+**Why.** The account so far says where the edit sits (name tokens) and what escapes it. It does not say what the edit
+writes, how that reaches the answer position, or what replaces the answer. The user asked for a complete mechanism,
+first on one model and one method. The MEND runs (DEV-041) were stopped for this.
+
+**Model:** Qwen (r128 vanilla), NPO + retain, seed 1, step 190 (`umu_npo_rt_txt_lr2e-04_s1_r128`): forget dc txt 0.06,
+img 0.97, F(T) 13.0 nats. Chosen over seed 0 (F 27 nats), whose forgetting is near the floor of bf16 precision.
+
+**Part 0, what the model says instead** (analysis of saved generations; done before this entry was written, so
+exploratory). Forget facts the vanilla answers by name, name form without options (DEV-038's generations):
+
+| response of θu | LLaVA NPO seed 0 (239 facts) | Qwen NPO seed 1 (349 facts) |
+|---|---|---|
+| still the true answer | 0.18 | 0.00 |
+| a value another profile has | 0.77 | 0.33 |
+| a value no profile has | 0.06 | 0.67 (almost all "NA" / "None") |
+
+For people with ≥ 3 borrowed answers, the single best other profile explains 0.66 of them in LLaVA (39 people) and
+0.93 in Qwen (13 people). Two candidate accounts follow: the edit writes a shared "unknown person" signal (Qwen), or it
+moves the name's representation towards another person (LLaVA).
+
+**Test** (`scripts/mech_umu_signal.py`, new, model-agnostic; text-only name question; first answer token; forget dc
+facts; θ0 = the same model with the LoRA off).
+- **(A) Where the suppression is carried: state patching by position group and layer.** At one layer, the residual
+  stream at a group of positions is exchanged between θu and θ0 on the same prompt.
+  - Groups: the name tokens; the tokens after the name; the last prompt token; the tokens before the name; all.
+  - *Restore:* θ0's states into θu; recovery R = 1 − F(patched) / F(T).
+  - *Inject:* θu's states into θ0; induced share I = F(injected) / F(T).
+  - Layers 0, 2, …, 26, 27.
+- **(B) Is what is written shared across people?** Δ = the mean over a fact's name tokens of (h_θu − h_θ0) at a layer.
+  - Cosine between the Δ of different people.
+  - Causal, at the layers where the name tokens carry the signal: subtract the mean Δ of the *other* forget people
+    from θu at the name tokens (`sub_mean`); subtract a random vector of the same norm (`sub_rand`); add the mean Δ to
+    θ0 at a forget person's name (`add_forget`), and at a *retain* person's name (`add_retain`).
+- **(C) Does the name still point to the person?** The θu state at the last name token of each forget person is
+  compared with the θ0 prototypes of all people (cosine after centring): how often is the nearest prototype the
+  person's own?
+
+**Predictions and thresholds:**
+- **(A)** from DEV-035 (name edit in L4–11; suppression in the question tokens by L12–16; merge at L22):
+  - M1: restoring the name tokens recovers ≥ 0.8 at some layer in 4–12.
+  - M2: restoring the name tokens recovers ≤ 0.2 at every layer ≥ 22.
+  - M3: restoring the last token recovers ≥ 0.8 at every layer ≥ 24.
+  - M4: injecting θu's name-token states into θ0 induces ≥ 0.5 at some layer in 4–12 (the states carry the
+    suppression without the later LoRA).
+- **(B)** **shared signal** if `sub_mean` ≥ 0.5 and `sub_rand` ≤ 0.1 at the best layer; **a generic "do not answer"
+  flag** if in addition `add_retain` lowers the retain facts' top-1 by ≥ 0.3. **Person-specific** if `sub_mean` < 0.2.
+- **(C)** reported: the share of forget people whose nearest θ0 prototype is their own, against the retain people's.
+
+**Validity checks** (the script aborts otherwise): patching θu with its own states changes log p by ≤ 0.05 nats; every
+row has ≥ 1 name token.
+
+**Known limits:** one model, one method, one seed; first-token readout; the residual stream only, no single heads or
+neurons; Part 0 was seen before the predictions for (B) were written.
+
+**Sizing:** about 77 forget and 143 retain facts, text only; about 1500 forward passes; 5–10 minutes on one GPU.
+
+**Outcome, Qwen NPO seed 1 step 190** (2026-11-24, about 04:57 UTC; code as hashed in `logs/dev044/launch.txt`,
+uncommitted; GPU 0; exit 0).
+- **Check:** θu patched with its own states: 0.00 nats. 2–5 name tokens per row.
+- 77 forget and 143 retain dc facts. F(T) = 13.58 nats; top-1 on the forget facts: θu 0.14, θ0 1.00; on the retain
+  facts: θu 0.97.
+- A smoke test on 8 facts was looked at and deleted before the full run.
+- **Output:** `results/qwen2vl7b/mech_umu/umu_npo_rt_txt_lr2e-04_s1_r128/step190/signal/`.
+
+**(A) Restore** (θ0's states into θu; recovery R, with θu's top-1 in brackets for the name and last-token rows):
+
+| layer | 4 | 6 | 8 | 10 | 12 | 14 | 16 | 18 | 20 | 22 | 24–27 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| name tokens | 0.11 | 0.39 | 0.78 (0.70) | **0.87 (0.84)** | 0.81 | 0.71 | 0.73 | 0.65 (0.47) | 0.10 (0.17) | 0.02 | 0.00 |
+| last prompt token | 0.00 | −0.01 | −0.01 | −0.01 | 0.01 | 0.21 | 0.29 | 0.48 (0.39) | **0.94 (0.91)** | 0.97 | 1.00 |
+| tokens after the name | 0.00 | 0.00 | 0.00 | 0.00 | 0.03 | 0.08 | 0.07 | 0.05 | 0.03 | 0.02 | 0.00 |
+| tokens before the name | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | −0.01 | −0.01 | −0.01 |
+| all prompt tokens | 0.12 | 0.40 | 0.80 | 0.94 | 0.98 | 0.99 | 0.99 | 0.99 | 0.99 | 1.00 | 1.00 |
+
+**(A) Inject** (θu's states into θ0; induced share I):
+
+| layer | 6 | 8 | 10 | 12 | 14 | 16 | 18 | 20 | 22 | 24 | 27 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| name tokens | 0.06 | 0.15 | 0.24 | **0.31** | 0.20 | 0.23 | 0.21 | 0.03 | 0.02 | 0.00 | 0.00 |
+| last prompt token | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.03 | 0.59 | 0.75 | 0.85 | 1.00 |
+| all prompt tokens | 0.07 | 0.21 | 0.36 | 0.48 | 0.54 | 0.59 | 0.68 | 0.75 | 0.79 | 0.86 | 1.00 |
+
+**(B) Shared signal?**
+- Cosine between the Δ of different people: 0.51–0.64 at layers 0–22, falling to 0.31 at layer 26.
+- |Δ| relative to the θ0 state at the name: 0.09 at layer 0, 0.30 at layer 10, 0.41 at layer 16.
+
+| layer | `sub_mean` R (top-1) | `sub_rand` R | `add_forget` I (top-1) | `add_retain` I (top-1) | `add_retain`, random vector (top-1) |
+|---|---|---|---|---|---|
+| 4 | 0.04 (0.16) | 0.00 | 0.00 (1.00) | 0.00 (1.00) | 0.00 (1.00) |
+| 8 | 0.20 (0.23) | 0.00 | 0.00 (1.00) | 0.00 (1.00) | 0.00 (1.00) |
+| 12 | 0.31 (0.23) | 0.02 | 0.02 (0.92) | 0.02 (0.90) | 0.00 (1.00) |
+| 16 | 0.32 (0.23) | 0.03 | 0.01 (0.95) | 0.02 (0.94) | 0.00 (1.00) |
+
+**(C) Identity.** The nearest θ0 prototype is the person's own for 0.98–1.00 of the forget people at every layer (retain:
+1.00). The cosine to the own prototype falls from 0.99 (layer 0) to 0.78 (layer 10) and 0.55 (layer 20).
+
+**Verdict:**
+- **M1 met** (name tokens 0.87 at layer 10). **M2 met** (≤ 0.02 from layer 22). **M3 met** (1.00 from layer 24).
+- **M4 not met:** θu's name-token states injected into θ0 induce at most 0.31.
+- **(B): partly shared; not a generic flag.** `sub_mean` reaches 0.32 with `sub_rand` at 0.03; adding the mean Δ to θ0
+  induces 0.02 on forget and on retain people alike.
+
+**Reading (exploratory except where a prediction is named):**
+- **The path of the suppression, in this model:**
+  1. *Written* at the name tokens by the LoRA of layers 4–10. With every position restored at layer 10, 0.94 of the
+     forgetting is gone, although the LoRA above stays on: its causal work is done by then.
+  2. *Carried* on the name tokens alone up to layer 18 (restore 0.65–0.87). No other position carries it.
+  3. *Read* by the last prompt token between layers 18 and 20: the name tokens stop mattering (0.65 → 0.10) exactly
+     where the last token starts to (0.48 → 0.94). This is the step at which the person's identity also moves into the
+     question stream (merge at layer 22, DEV-035).
+  4. *Effect:* the model gives a null answer ("NA", Part 0) instead of the fact.
+- **The name still identifies the person.** It is not redirected to another profile: the nearest prototype is the
+  person's own in 98–100% of the cases. The state is perturbed by 30–40% of its norm.
+- **The perturbation has a common part and a person-specific part.** The Δ of different people share a direction
+  (cosine about 0.57), and removing that shared part recovers a third. But adding it to the vanilla does nothing,
+  for forget and retain people alike. So it is not a detachable "do not answer" flag.
+- **The perturbed states are not enough on their own** (inject: 0.31 at the name, 0.75 with every position at layer
+  20). The LoRA of the later layers adds the rest, as R_post_all = 0.23 suggested (DEV-035).
+- **Why the portrait and the description escape, in these terms:** the suppression is a perturbation of the name-token
+  states, which the last token picks up when it reads the name at layers 18–20. A question without the name has no
+  such states to read.
+- **Limits:** one model, one method, one seed. The reading step is located by position and layer, not by attention
+  head. What the perturbation does to the retrieval of the fact is not opened up.
+
+### DEV-043 — 2026-11-24 — the reverse direction: unlearn with portraits only, ask by name (decided by: user; design by: implementer)
+**Why.** Every result so far unlearns with text and tests the portrait. The paper's claim is meant to be symmetric:
+an edit trained on one input form stays with that form. This entry tests the other direction.
+
+**Test** (`scripts/unlearn_umu.py` with `unlearn.modality=img`, wired up for this entry).
+- **Forget rows:** the MM_QA questions ("this person" + the portrait) of the 50 forget people. No name appears in a
+  forget row.
+- **Retain rows:** the same form for the 200 retain-unlearn people.
+- **Recipe:** NPO + retain as G3 (retain weight 5, 4 epochs, a checkpoint every 0.5 epoch), lr 2e-4.
+- **Runs:** seeds 0 and 1 on LLaVA (UMU's vanilla) and on Qwen (the r128 vanilla). If seed 0 of a model has no
+  qualifying checkpoint, it is rerun at 1e-4, then 4e-4, before seed 1 (as DEV-030).
+- **Readout:** unchanged (UMU protocol: txt, img, txt+img on the forget people; txt, img on the unseen retain people).
+
+**Selection: gate 1′ mirrored.** Unseen retain dc txt and img ≥ 0.90; retain-only degeneracy on the img generations
+≤ 0.20; **forget dc img ≤ 0.70**; among these the lowest forget dc img, ties to the earlier step.
+
+**Predictions and thresholds,** per run at the selected checkpoint:
+- **Leak by name:** forget dc txt ≥ 0.85.
+- **No leak:** forget dc txt ≤ forget dc img + 0.10 (the portrait edit reaches the name question).
+- Otherwise partial.
+- **The symmetric claim holds** if at least 3 of the 4 runs leak by name. **It fails** if 2 or more show no leak.
+- Reported: forget dc txt+img, where both the name and the portrait are in the question.
+
+**Validity checks:** the script asserts that every forget row has an image and no forget row is text-only, and that
+the forget people's names do not occur in the forget questions. A `--debug` smoke test per model first.
+
+**Known limits:**
+- Behaviour only. Where the edit is written in this direction (on the image tokens? before the merge?) needs the
+  mirrored interventions and is a follow-up entry.
+- Two seeds per model; one objective.
+- A portrait question that fails may also reflect damage to visual question answering; gate 1′ controls this through
+  the retain portrait questions.
+
+**Sizing:** 75 steps per epoch, 300 steps, with portrait batches: about 30–40 minutes per run; 4 runs.
+
+**Amendment before any run** (2026-11-24, 05:35 UTC; found in the `--debug` smoke test, which produced no readout of
+interest).
+- MM_QA contains rows whose answer is or contains the person's name: "What is the name of this person?", and the
+  Interest and Description rows ("Amelia loves …", "Amelia Brockhurst, born in …").
+- With these rows the name tokens would be part of the unlearning sequences, as answers. That would break the condition
+  this entry states ("no name appears in a forget row") and could bind the edit to the name for a reason unrelated to
+  the question asked here.
+- **Change:** every forget and retain row whose question or answer contains the person's first or last name is dropped.
+  The script logs the dropped fields and asserts that no kept row mentions the name. About 9 of the 12 rows per person
+  remain, so an epoch has about 57 steps instead of 75.
+- The text-only runs used all 12 UM_QA rows. The two directions therefore differ in the number of rows per person;
+  the readout (Classify attributes) is the same.
+
+**Outcome** (2026-11-24, 05:32–08:12 UTC; code as hashed in `logs/dev043/launch.txt`, uncommitted; GPUs 0, 6, 7; all 6
+runs exit 0).
+- **Validity:** each log shows 475 of 600 forget rows and 1883 of 2400 retain rows kept, all with a portrait. Dropped
+  fields: Name, Interest, Description, and a few Born rows whose answer contains a part of the name.
+- 60 steps per epoch, 240 steps, 8 checkpoints per run.
+- **Outputs:** `runs/<model>/umu_unlearn/umu_npo_rt_img_lr…`; `results/<model>/mech_umu/<run>/step<N>/desc_leak/`.
+
+| run | selected step (gate 1′ mirrored) | forget dc img / txt / txt+img | unseen retain dc txt / img | verdict |
+|---|---|---|---|---|
+| LLaVA seed 0, 2e-4 | 240 | 0.59 / **0.97** / 0.88 | 0.98 / 0.91 | leak by name |
+| LLaVA seed 1, 2e-4 | none (forget dc img stops at 0.73–0.74) | last step: 0.74 / 0.98 / 0.85 | 0.98 / 0.97 | not judged |
+| Qwen seed 0, 2e-4 | none (retain img 0.85–0.88) | last step: 0.45 / 0.94 / 0.71 | 0.97 / 0.86 | not judged |
+| Qwen seed 0, 1e-4 | none (forget dc img 0.73; retain img 0.88) | last step: 0.73 / 0.95 / 0.90 | 0.97 / 0.88 | not judged |
+| Qwen seed 0, 4e-4 | 180 | 0.01 / **0.96** / 0.16 | 0.97 / 0.92 | leak by name |
+| Qwen seed 1, 4e-4 | none (retain img 0.86–0.88) | last step: 0.08 / 0.94 / 0.40 | 0.94 / 0.87 | not judged |
+
+- Over all 48 checkpoints of the 6 runs, forget dc txt is 0.86–1.00 (0.94 or more in 45 of them), while forget dc img
+  goes down to 0.01.
+- Description test on the two selected checkpoints (scored forget facts; θ0 = 1.00): `name` 0.97 / 0.98, `desc` 0.92 /
+  0.84, `name+desc` 0.98 / 0.97; retain `name` 0.97 / 0.99, `desc` 0.95 / 0.94.
+
+**Verdict, as pre-registered: undecided.** 2 of the 4 seed runs have a qualifying checkpoint, and both leak by name; the
+rule needs 3. No run shows "no leak".
+
+**Reading (exploratory):**
+- **The reverse direction leaks as the forward one does.** An edit trained on portrait questions lowers the portrait
+  answers (to 0.01 in Qwen) and leaves the name question at 0.94–0.98, in qualifying and non-qualifying runs alike.
+  The other text route (description) is also intact.
+- This was a prediction written before the runs, from the account "the edit stays with the input form it was trained
+  on". It is the first prior test of that account, and it is met wherever it could be judged.
+- **Name and portrait together mirror the forward direction.** In LLaVA the untouched cue rescues the answer (0.88
+  here; 0.97 with the portrait in the forward direction). In Qwen the edited cue wins (0.16 here; 0.09–0.32 forward).
+- **Why only two runs qualify:** the retain portrait questions fall slightly below 0.90 in Qwen (0.85–0.88), and
+  LLaVA seed 1 forgets too little by portrait (0.74). Neither is a counter-example.
+- **Limits:** two qualifying checkpoints; behaviour only; where the portrait edit is written is not tested.
+
+### DEV-042 — 2026-11-24 — is the part before the merge enough? The LoRA only in the layers before L* (decided by: user; design by: implementer)
+**Why.** DEV-040 confined the LoRA to the layers after the merge: the names were still forgotten and the portraits
+still answered. The mirror case has not been run. If the layers before the merge alone also forget the name and also
+leak, then the depth of the edit is not what makes it leak; its binding to the input form is.
+
+**Test** (text-only NPO + retain, the G3 recipe, name rows only; seed 0; `lora.max_layer`).
+- LLaVA: LoRA in layers 0–19 (L* = 20). Run tag `gate_rw5n200_Lto19`.
+- Qwen (r128 vanilla): LoRA in layers 0–21 (L* = 22). Run tag `r128_Lto21`.
+- lr 2e-4, as the all-layer references; rerun once at 4e-4 if forget dc txt never reaches 0.70.
+- References, all layers: LLaVA G3 seed 0 (forget dc txt 0.58, img 0.92) and Qwen NPO seed 0 (0.01, 0.92).
+
+**Predictions and thresholds,** at the gate-1′ checkpoint:
+- **(P1) Sufficient:** a qualifying checkpoint exists (forget dc txt ≤ 0.70 with the retain set ≥ 0.90).
+- **(P2) Leak:** forget dc img ≥ 0.85 there.
+- **"The part before the merge is enough"** if P1 and P2 hold in both models. **Not enough** if a model has no
+  qualifying checkpoint at either lr.
+- Read together with DEV-040: if the layers before the merge alone and the layers after it alone both forget the
+  name and both leak, the statement "the edit is triggered before the merge" is dropped as the cause of the leak, and
+  kept only as a description of where the default edit lands.
+
+**Known limits:** one seed; the number of trainable layers differs from the references.
+
+**Sizing:** 2 runs of about 25–30 minutes, one GPU each.
+
+**Outcome** (2026-11-24, 04:50–05:22 UTC; code as hashed in `logs/dev042/launch.txt`, uncommitted; GPUs 6 and 7; both
+runs exit 0; LoRA on 140 modules for LLaVA and 154 for Qwen).
+
+| run | selected step (gate 1′) | forget dc txt / img / txt+img | unseen retain dc txt / img |
+|---|---|---|---|
+| Qwen, LoRA in layers 0–21 | 266 | 0.03 / **0.96** / 0.30 | 0.94 / 0.97 |
+| LLaVA, LoRA in layers 0–19 | none | steps 190–300: 0.20–0.44 / 0.92–0.94 | 0.84–0.86 / 0.93–0.94 |
+
+- **Qwen: P1 and P2 hold.** The layers before the merge alone forget the name (0.03) and leak by portrait (0.96).
+- **LLaVA: not judged.** The name is forgotten (down to 0.20) and the portrait is answered (0.94), but no checkpoint
+  passes gate 1′: the unseen retain txt stays at 0.84–0.88. The 4e-4 rerun was for a run that never reaches forget dc
+  txt 0.70, which is not the case here, so it was not run.
+- **Verdict: not established as pre-registered** (it needed both models). In Qwen the part before the merge is enough.
+
+**Reading, with DEV-040 (exploratory):** in Qwen, the LoRA confined to the layers before the merge (0.03 / 0.96) and
+the LoRA confined to the layers after it (0.00 / 0.82, DEV-040 Q-a) both forget the name and both leave the portrait.
+LLaVA shows the same pattern on both sides (0.20 / 0.94 here, non-qualifying; 0.30–0.70 / 0.88–0.91 in DEV-040). The
+depth of the edit is therefore not what makes it leak. "The edit is triggered before the merge" stays as a description
+of where the default edit lands, and is dropped as the cause of the leak.
+
+### DEV-041 — 2026-11-24 — a learned editor (after MEND) for unlearning one person from text alone (decided by: user; design by: implementer)
+**Why.** Restricting where the edit may be written (DEV-039, DEV-040's first checkpoints) leaves the portrait answers at
+0.82 or above. The user proposed MEND's approach instead: learn, on other people, how a text-only update must be
+changed so that it also reaches the portrait route.
+
+**Method** (`scripts/unlearn_umu_mend.py`, new; after Mitchell et al., ICLR 2022).
+- **Edit of one person, text only:** the gradient of −log p(refusal | name question) over the person's 8 attribute
+  questions, with respect to the MLP down-projections of the decoder layers from the merge on (LLaVA 20–31, Qwen
+  22–27). The refusal is the fixed string "I'm not sure."
+- **Editor:** for every token and edited layer it maps (layer input u, output gradient δ) to (ũ, δ̃). The update is
+  ΔW = −α · mean over tokens of δ̃ ũᵀ. One shared residual MLP of rank 1920 with a scale and shift per layer,
+  initialised to the identity, and a learned α per layer. The base model is frozen.
+- **Editor training,** on 300 people who are not to be forgotten (retain_90, positions 100–399). After a person's
+  text-only edit:
+  - generality: the person's portrait questions must give the refusal;
+  - edit success: the person's name questions must give the refusal;
+  - locality: other people's name and portrait answers must not change (KL before ‖ after, answer tokens).
+  - Loss = 0.1 × (generality + edit) / 2 + locality. 3000 episodes, updates every 4; Adam, lr 1e-5 (α: 1e-3).
+- **No portrait of a forget person is read** in training or editing. Only the 300 training people's portraits are
+  written to the run's image folder, and the script asserts that no forget ID is among them.
+- **Step size α0:** calibrated with the untrained editor on training people: the largest tested value whose locality
+  KL is ≤ 0.05. The first smoke test had ΔW as a sum over tokens with α0 = 1e-4, which gave a locality KL of 11; ΔW is
+  now a mean over tokens.
+
+**Readout** (UMU protocol; doubly-correct facts of the unedited model).
+- **One person edited at a time** (a deletion request): the person's facts under txt, img and txt+img, and the facts
+  of 10 readout-retain people under the same edit.
+  - On the 50 forget people.
+  - On 50 held-out people (retain_90, positions 400–449), whom the editor never trained on.
+- **All 50 forget people edited at once** (the 50 edits' factors pooled): full protocol. Reported, not judged; MEND is
+  known to degrade when many edits are applied together.
+- **Control:** the untrained editor at the calibrated α0 (a plain, rescaled gradient step), same readout.
+
+**Predictions and thresholds,** for the single-person edits on the forget people:
+- **Success:** the person's dc img ≤ 0.50 and dc txt ≤ 0.50, with other people's dc txt and img ≥ 0.90.
+- **Partial:** dc img between 0.50 and 0.80 with the same locality.
+- **No effect:** dc img ≥ 0.80. **Not judged** if locality is below 0.90.
+- The editor matters only if it beats the untrained control on dc img by ≥ 0.20 at a locality ≥ 0.90.
+- LLaVA runs first. Qwen runs if LLaVA is at least partial, or if the user asks.
+
+**Known limits:**
+- The target is a refusal, as in PO; whether the fact is removed is not tested here.
+- One person per edit; the pooled edit is only reported.
+- The editor is trained and tested on people from one synthetic distribution; it needs portraits of other people.
+- One seed; the hyperparameters are a first guess scaled from MEND's.
+
+**Sizing:** about 3–4.5 s per episode (measured on a shared GPU: 4.5), so 2.5–4 hours for 3000 episodes; the readout
+is about 25 minutes. One GPU per run.
+
+**Status: stopped by the user before completion** (2026-11-24, 04:54 UTC), to work on the mechanism first (DEV-044). No
+verdict.
+- **Calibration** (LLaVA, layers 20–31, untrained editor, 16 episodes per value; portrait NLL of the refusal / of the
+  true answer / locality KL): 1e-6: 4.05 / 0.048 / 0.0000; 1e-5: 3.96 / 0.048 / 0.0000; 1e-4: 2.92 / 0.049 / 0.0002;
+  **1e-3: 0.61 / 0.147 / 0.042**; 1e-2: 1.95 / 8.38 / 5.04. Chosen by the rule: α0 = 1e-3.
+- **Editor training** reached episode 150 of 3000 (portrait NLL of the refusal 0.55, name NLL 0.03, locality KL 0.020;
+  2.3 s per episode). The editor was not saved.
+- **Untrained control,** partial: on the 50 held-out people (54 dc facts), one person edited at a time: the person's
+  facts txt 0.31, img 0.83, txt+img 0.63; 0.02 of the portrait answers are the refusal; other people's facts txt 0.90,
+  img 0.97. The forget people were not reached.
+- So a plain rescaled gradient step in layers 20–31 behaves like the trained runs: the name is forgotten, the portrait
+  mostly is not. Whether a trained editor changes this is untested.
+
+### DEV-040 — 2026-11-24 — the edit after the merge, with the retain set protected by other people's portraits (decided by: user; design by: implementer)
+**Why.** DEV-039 failed its criterion, but its arm B on Qwen was the first run in which text-only unlearning lowered
+the portrait answers of the forget people more than those of the retain people (0.39–0.64 against 0.67–0.82). It did
+not qualify because the retain set fell. The user wants a method that does not leak; this entry follows that one lead.
+
+**What changes against DEV-039:**
+- **No name-free rows.** They added a second input-bound edit and nothing else (DEV-039).
+- **Retain term with portraits** (`unlearn.retain_img=true`, new): the retain set also holds the MM_QA portrait
+  questions of the 200 retain-unlearn people.
+  - The forget rows stay text-only, and no portrait of a forget person is ever used; the script asserts this.
+  - Rationale: in DEV-039 nothing in training protected the portrait questions.
+- **The first trainable layer is varied** (`lora.min_layer`). The swap share at L* is only 0.65–0.81; it reaches
+  0.89–1.00 two layers later (DEV-027, DEV-035).
+
+**Arms** (NPO + retain, the G3 recipe; seed 0; forget = the name rows only; lr 4e-4, rerun once at 8e-4 if forget dc
+txt never reaches 0.70):
+
+| arm | model | LoRA layers | retain rows | purpose |
+|---|---|---|---|---|
+| Q-a | Qwen | 22–27 | text | the layer restriction alone (DEV-039 B had name-free rows too) |
+| Q-b | Qwen | 22–27 | text + portraits | does the portrait retain term keep the retain set? |
+| Q-c | Qwen | 24–27 | text + portraits | later start |
+| Q-d | Qwen | 18–27 | text + portraits | earlier start (control) |
+| L-b | LLaVA | 20–31 | text + portraits | as DEV-028, with the portrait retain term |
+| L-c | LLaVA | 24–31 | text + portraits | later start |
+| L-d | LLaVA | 16–31 | text + portraits | earlier start (control) |
+
+Run tags: `r128_L<k>` / `r128_L<k>ri` and `gate_rw5n200_L<k>ri` (`ri` = retain with portraits).
+
+**Readout:** the run's own checkpoints; the selected checkpoint by gate 1′ (DEV-036).
+
+**Predictions and thresholds,** on forget dc img at the selected checkpoint (as DEV-039):
+- **Success:** ≤ 0.50. **Partial:** between 0.50 and 0.80. **No effect:** ≥ 0.80.
+- A run without a qualifying checkpoint is not judged; its checkpoints are reported.
+- **Reported for every checkpoint:** the selective drop = unseen retain dc img − forget dc img. It separates "the
+  portrait answers of the forget people fall" from "portrait answers fall in general".
+- **Expectations, no verdict:**
+  - Q-b has a qualifying checkpoint where Q-a has none.
+  - The later the first trainable layer, the lower forget dc img at a similar forget dc txt (Q-d > Q-b > Q-c; L-d >
+    L-b > L-c).
+- **A risk to watch:** the portrait retain term may also restore the forget people's portrait answers. Then forget dc
+  img returns to ≥ 0.80 in the `ri` arms while Q-a stays lower.
+
+**Validity checks:**
+- The log shows 2400 text + 2400 portrait retain rows in the `ri` arms.
+- The script's assertions that no forget row has an image and that only retain batches may carry one.
+- `--debug` smoke tests of one `ri` arm per model first.
+
+**Known limits:**
+- One seed and one lr per arm.
+- The layer restriction and the number of trainable layers change together.
+- The portrait retain term needs portraits of other people.
+- The readout's retain people are not the ones in the retain term.
+
+**Sizing:** 300 steps per run, about 30–35 minutes with the portrait batches. 7 runs on the 5 idle GPUs: about 70
+minutes, then about 10 minutes of tests per selected checkpoint (core3, description test). Status:
+`logs/dev040/orchestrate.txt`.
+
+**Outcome** (2026-11-24, 04:13–04:44 UTC; code as hashed in `logs/dev040/launch.txt`, uncommitted; GPUs 0, 4–7).
+- **Stopped by the user at 04:44 UTC,** after the first 5 arms had finished without an effect.
+  - Not run to the end: the two earlier-start control arms Q-d and L-d. Their folders (`…_r128_L18ri`,
+    `…_gate_rw5n200_L16ri`) are incomplete and must not be used.
+  - Not run: the tests on the selected checkpoints (core3, description test).
+- **Validity:** the smoke tests passed; the `ri` logs show 2400 text + 2400 portrait retain rows.
+- No arm needed the 8e-4 rerun.
+
+Selected checkpoint (gate 1′):
+
+| arm | LoRA layers, retain rows | step | forget dc txt / img / txt+img | unseen retain dc txt / img | selective drop | verdict |
+|---|---|---|---|---|---|---|
+| Q-a | Qwen 22–27, text | 190 | 0.00 / **0.82** / 0.04 | 0.95 / 0.94 | 0.12 | no effect |
+| Q-b | Qwen 22–27, text + portraits | 228 | 0.13 / **0.94** / 0.66 | 0.92 / 0.92 | −0.02 | no effect |
+| Q-c | Qwen 24–27, text + portraits | 190 | 0.13 / **0.90** / 0.82 | 0.90 / 0.94 | 0.04 | no effect |
+| L-b | LLaVA 20–31, text + portraits | 190 | 0.30 / **0.91** / 0.95 | 0.90 / 0.96 | 0.05 | no effect |
+| L-c | LLaVA 24–31, text + portraits | 300 | 0.70 / **0.88** / 0.97 | 0.95 / 0.94 | 0.06 | no effect |
+
+At the last step (300) the portrait accuracy is 0.88–0.95 in all five. Lower values occur mid-training (0.64–0.78),
+together with a lower retain set, and both recover.
+
+**Verdict: no effect in any of the 5 arms** (forget dc img ≥ 0.80 at every selected checkpoint).
+
+**Reading (exploratory):**
+- **Confining the LoRA to the layers after the merge does not carry a text-only edit to the portrait route.** The names
+  are forgotten (0.00–0.30 in four arms) while the portrait answers stay at 0.82–0.94.
+- **DEV-039's lead does not hold up.** With the name rows alone (Q-a) the retain set is kept (0.95 / 0.94) and the
+  selective drop is 0.12. The larger drop in DEV-039 B came with a damaged retain set and with the name-free rows.
+- **The portrait retain term keeps the retain portraits, and the forget portraits with them** (Q-b 0.94 against Q-a
+  0.82). This is the risk named above; it rests on one comparison.
+- **The layer of the first trainable block makes no clear difference** (Qwen 22 vs 24; LLaVA 20 vs 24). The control
+  arms that would complete the comparison were not run.
+- A possible reason, not tested: in the layers after the merge the name-token positions still exist, so the edit can
+  stay keyed on them.
+
+### DEV-039 — 2026-11-23 — a text-only unlearning that reaches the portrait route? Name-free rows, and the edit placed after the merge (decided by: user; design by: implementer)
+**Why.** Text-only unlearning leaks because the edit can be written on the name tokens, before the routes merge
+(DEV-033, 035, 036). The user asked for a small test of two changes that follow from this account. If they work, a
+method is worth building; if not, the paper stays a diagnosis.
+
+**The two changes** (both text-only; no image is used in training):
+- **(1) Name-free rows** (`unlearn.desc_mix=true`, new).
+  - For every forget person, the forget set also holds the description form of DEV-037: the person's other
+    attributes as a list, then the "this person" question, for the 7 attributes of DEV-038.
+  - The retain-unlearn people get the same rows, so that the form itself is not what is unlearned.
+  - Rationale: "do not answer when this name appears" no longer satisfies the objective.
+- **(2) The LoRA only in the layers from the merge on** (`lora.min_layer`): layer 20 for LLaVA (DEV-027), layer 22 for
+  Qwen (DEV-035).
+  - Rationale: the edit can then only change what the routes share.
+
+**Arms** (NPO + retain, the G3 recipe; seed 0; both models, i.e. 4 runs):
+- **A:** change (1) alone, all layers, lr 2e-4. Run tags `gate_rw5n200_dm` (LLaVA) and `r128_dm` (Qwen).
+- **B:** changes (1) and (2), lr 4e-4, the lr that DEV-028 needed with the LoRA in layers 20–31. Run tags
+  `gate_rw5n200_dmL20` and `r128_dmL22`.
+  - If forget dc txt never reaches 0.70, B is rerun once at 8e-4.
+- **References, already run:**
+  - name rows only, all layers: LLaVA G3 seed 0 (forget dc img 0.92) and Qwen NPO seed 0 (0.92);
+  - change (2) alone, LLaVA: DEV-028 (0.85).
+
+**Readout:** the run's own checkpoints (UMU protocol), with the selected checkpoint by gate 1′ (DEV-036).
+
+**Predictions and thresholds,** on forget dc img at the selected checkpoint. The portrait was never used in training.
+- **Success:** ≤ 0.50.
+- **Partial:** between 0.50 and 0.80.
+- **No effect:** ≥ 0.80.
+- Gate 1′ already requires retain dc img ≥ 0.90, so a drop cannot come from portrait questions breaking in general.
+- **Next step, set by the user:** only a success in at least one arm and model leads to further work on a method
+  (seeds, comparison with unlearning that uses images).
+
+**Also run on each selected checkpoint,** reported:
+- `mech_umu_name_depth.py --split-at L*`: is the edit still name-bound?
+- core3.
+- `mech_umu_desc_leak.py`. The description is now a trained form, so this is no longer a leak test.
+
+**Validity checks:**
+- The log must show 600 name + 350 description forget rows, and 2400 + 1400 retain rows.
+- The script's assertion that no training batch carries an image.
+- A `--debug` smoke test of both arms on both models first.
+
+**Known limits:**
+- One seed.
+- The description needs the person's other attributes, which a real request may not provide.
+- The description rows cover 7 attributes; the name rows cover all 12 questions.
+- A failure may be an lr problem in arm B (6 trainable layers in Qwen), not a failure of the idea.
+
+**Sizing:** 119 steps per epoch, 476 steps, 8 checkpoints. About 30–35 minutes per run, 4 runs on 4 GPUs at once,
+then about 10 minutes of tests. They start when DEV-036's queues end. Status: `logs/dev039/orchestrate.txt`.
+
+**Code note:** `vlmu/umu.py` (`describe`, `desc_unlearn_rows`) and `scripts/unlearn_umu.py` (`unlearn.desc_mix`, off by
+default) were edited at 20:40 UTC, while DEV-036's queues were still launching runs. The change is additive; runs
+without `desc_mix` are unaffected.
+
+**Outcome** (2026-11-23, 20:45–21:50 UTC; code as hashed in `logs/dev039/launch.txt`, uncommitted; GPUs 0, 4–7; the 4
+runs exit 0).
+- **Validity:** each log shows 600 + 350 forget rows and 2400 + 1400 retain rows. Smoke tests of the 4 configurations
+  passed.
+- **The depth split could not run on arm B:** with the LoRA only from L* on, `--split-at L*` has no module before the
+  split, and the script stops by design (two attempts for LLaVA B).
+- **The 8e-4 rerun of arm B did not trigger:** both models reached forget dc txt ≤ 0.70 at 4e-4.
+
+Selected checkpoint (gate 1′), with the reference runs:
+
+| run | step | forget dc txt / img / txt+img | unseen retain dc txt / img | verdict (forget dc img) |
+|---|---|---|---|---|
+| LLaVA reference (name rows, all layers) | 300 | 0.58 / 0.92 / 0.97 | 0.90 / 0.98 | — |
+| LLaVA A (name-free rows) | 300 | 0.62 / **0.89** / 0.97 | 0.93 / 0.95 | no effect |
+| LLaVA B (name-free rows, layers 20–31) | 420 | 0.64 / **0.85** / 0.86 | 0.90 / 0.93 | no effect |
+| Qwen reference | 190 | 0.01 / 0.92 / 0.32 | 0.92 / 0.97 | — |
+| Qwen A | 476 | 0.45 / **0.94** / 0.77 | 0.90 / 0.94 | no effect |
+| Qwen B (layers 22–27) | none | no checkpoint passes gate 1′ | | not judged |
+
+Qwen B, every second checkpoint (forget dc txt / img; unseen retain dc txt / img):
+
+| step | 120 | 240 | 360 | 420 | 476 |
+|---|---|---|---|---|---|
+| forget | 0.84 / 0.78 | 0.45 / 0.58 | 0.16 / 0.39 | 0.18 / 0.64 | 0.16 / 0.51 |
+| retain | 0.85 / 0.79 | 0.69 / 0.62 | 0.70 / 0.67 | 0.88 / 0.82 | 0.81 / 0.78 |
+
+In LLaVA A, later checkpoints forget more by name (0.33 at step 476) with the portrait unchanged (0.91); they fail
+gate 1′ on retain txt (0.81–0.86).
+
+Tests on the selected checkpoints:
+
+| | R_pre_name / R_post_name | name-off, all layers | F(NI) nats | `desc` test, forget: `name` / `desc` | `desc` test, retain: `name` / `desc` |
+|---|---|---|---|---|---|
+| LLaVA A | 0.79 / 0.04 | 0.82 | 0.13 | 0.25 / 0.51 | 0.76 / 0.78 |
+| LLaVA B | not available | 0.31 (F 3.20 → 2.21) | — | 0.35 / 0.33 | 0.77 / 0.73 |
+| Qwen A | 0.86 / 0.00 | 0.87 | 0.10 | 0.18 / 0.31 | 0.85 / 0.75 |
+
+For comparison, the `desc` accuracy on forget facts without name-free rows was 0.87–0.90 (DEV-038).
+
+**Verdict: not a success.** No arm in either model brings forget dc img to ≤ 0.50 at a qualifying checkpoint. Three
+arms are "no effect"; Qwen B has no qualifying checkpoint. By the user's rule, no further method work follows from
+this test as it stands.
+
+**Reading (exploratory, formed after seeing these data):**
+- **Name-free rows do what they train and nothing more.**
+  - The description form is now forgotten (0.31–0.51, from 0.87–0.90).
+  - The name questions are still forgotten through a name-token edit before the merge (R_pre_name 0.79 / 0.86).
+  - The portrait is untouched (0.89 / 0.94; F(NI) ≈ 0.1 nats).
+  - The model added a second input-bound edit instead of moving the edit to what the routes share. This supports the
+    diagnosis: the objective is met at the input form it is trained on.
+- **Placing the edit after the merge is the only change that reaches the portrait at all,** and only in Qwen.
+  - Qwen B: forget dc img falls to 0.39–0.64 while the unseen retain img is 0.67–0.82, i.e. 0.18–0.28 lower on the
+    forget facts than on the retain facts. No image was trained on.
+  - The cost is the retain set (0.62–0.88), so no checkpoint qualifies.
+  - LLaVA B: the portrait stays at 0.83–0.86, as with the layer restriction alone (DEV-028: 0.85). The name-free rows
+    add nothing there.
+  - Not separated: in Qwen, the layer restriction was only run together with the name-free rows.
+- **A possible follow-up, not started:** the layer restriction alone on Qwen, and a retain term that also holds the
+  portrait questions of the retain people. Portraits of other people are not portraits of the person to forget.
+- **Limits:** one seed; one lr per arm; arm B trains 6 layers in Qwen and 12 in LLaVA.
+
+### DEV-037 — 2026-11-23 — feasibility probe: can the vanilla answer about a person described without the name? (decided by: user; design by: implementer)
+**Why.** The account predicts that any question reaching the person without the name tokens escapes a text-only edit,
+not only the portrait. A text-only test of that needs a way to refer to the person without the name. This probe checks
+on the vanillas whether a description by attributes works at all. Nothing is unlearned here.
+
+**Test** (scratchpad script `desc_probe.py`; text only; generation, 50 new tokens).
+- **Facts:** the Classify facts of the 50 forget profiles and the first 100 retain profiles (300 facts).
+- **Models:** LLaVA's UMU vanilla and the Qwen r128 vanilla. Controls: the two public bases, which never saw the
+  profiles.
+- **Prompt forms:**
+  - `name`: the benchmark's name question (reference).
+  - `desc`: the person's other Biography attributes as a list (place and date of birth, gender, occupation, height,
+    education, salary, residence, medical conditions; the queried one left out), then the "this person" question.
+  - `desc_other`: the same with another person's attributes (the next profile of the same set whose answer
+    differs). The score is still against the original person's answer.
+  - `none`: the "this person" question alone.
+- Each form runs with and without the options line.
+- **Score:** without options, the correct answer appears in the response as whole words, case-insensitive (the
+  prompt is off-distribution, so the answer format may vary). Exact match is also reported. With options: exact
+  match, as the benchmark.
+
+**Thresholds** (no options; per model):
+- **Works:** `desc` ≥ 0.50 and `desc` − `desc_other` ≥ 0.30. A name-free text test on the unlearned models is then
+  worth building, as a new entry.
+- **Drop:** `desc` − `desc_other` < 0.10 in both models. The model cannot find the person from a description.
+- **Otherwise partial:** reported to the user.
+- Reported with options: vanilla − base on `desc`, and `desc` − `desc_other`.
+
+**Known limits:**
+- The description lists attributes the model learned as answers to name questions. Finding the person from them is
+  the reverse direction, which fine-tuned language models often fail at.
+- An attribute can be guessed from the others (a salary from an occupation). The `desc_other` and base controls
+  measure that.
+- One prompt wording.
+
+**Sizing:** 2400 text-only generations per model, 4 models; about 5 minutes each on one GPU.
+
+**Outcome** (2026-11-23, about 20:05 UTC; scratchpad script, GPU 0; outputs in the session scratchpad `desc_probe/`).
+The first attempt stopped on a missing row field (`temp`); no generation had run.
+
+Share of responses containing the correct answer, no options (forget / retain facts):
+
+| | `name` | `desc` | `desc_other` | `none` |
+|---|---|---|---|---|
+| LLaVA vanilla | 0.69 / 0.72 | **0.57 / 0.53** | 0.12 / 0.10 | 0.18 / 0.20 |
+| Qwen r128 vanilla | 1.00 / 1.00 | **0.58 / 0.56** | 0.14 / 0.12 | 0.20 / 0.21 |
+| LLaVA base, Qwen base | ≤ 0.01 | ≤ 0.02 | ≤ 0.01 | 0.00 |
+
+With options (exact match), `desc`: LLaVA vanilla 0.64 / 0.57 against its base 0.09 / 0.07; Qwen vanilla 0.68 / 0.62
+against its base 0.36 / 0.28. `desc_other`: 0.39 / 0.35 and 0.30 / 0.27.
+
+By attribute (no options; `desc` / `desc_other` / `none`):
+
+| attribute | LLaVA vanilla | Qwen vanilla |
+|---|---|---|
+| Annual_Salary | 0.35 / 0.00 / 0.07 | 0.60 / 0.02 / 0.07 |
+| Height | 0.39 / 0.03 / 0.05 | 0.50 / 0.03 / 0.08 |
+| Birth | 0.12 / 0.00 / 0.00 | 0.27 / 0.00 / 0.00 |
+| Born | 0.51 / 0.00 / 0.00 | 0.46 / 0.00 / 0.05 |
+| Education | 0.84 / 0.00 / 0.03 | 0.82 / 0.00 / 0.08 |
+| Occupation | 0.54 / 0.08 / 0.27 | 0.43 / 0.16 / 0.27 |
+| Residence | 0.71 / 0.07 / 0.29 | 0.54 / 0.07 / 0.29 |
+| Medical_Conditions | 0.76 / 0.68 / 0.79 | 0.82 / 0.68 / 0.79 |
+
+**Verdict: works in both models.** `desc` is 0.53–0.58 (≥ 0.50), and `desc` − `desc_other` is 0.43–0.45 (≥ 0.30).
+
+**Reading (exploratory):**
+- The vanillas find the person from a description. Exact values that cannot be guessed (salary, height) come back for
+  35–60% of the facts with the person's own description, and for 0–3% with another person's.
+- Medical_Conditions is prior-driven ("NA" without any description: 0.79) and should be left out of a leak test.
+- The reverse lookup was expected to fail. A likely reason it does not: the training set also contains each
+  person's Description paragraph, where the attributes appear together.
+- A name-free text test on the unlearned models is therefore feasible: DEV-038.
+
+### DEV-038 — 2026-11-23 — does a text-only edit leak inside text? The person described without the name (decided by: user; design by: implementer)
+**Why.** The account says the text-only edit is bound to the name tokens. Then a text question that reaches the person
+without the name should escape it, just as the portrait does. DEV-037 showed that a description by attributes
+reaches the person in both vanillas. If the prediction holds, the leak is not a property of the image modality: it
+follows from where the edit is written.
+
+**Test** (`scripts/mech_umu_desc_leak.py`, new; text only; generation without options, 50 new tokens; θu and θ0 =
+the same model with the LoRA off).
+- **Facts:** for the 50 forget profiles and the first 50 retain profiles, the UM_QA questions on Born, Birth,
+  Occupation, Height, Education, Annual_Salary and Residence (7 per person). Medical_Conditions is left out
+  (DEV-037).
+- **Forms:**
+  - `name`: the UM_QA question, i.e. exactly the form the unlearning trained on;
+  - `desc`: the person's other attributes as a list, then the "this person" question (as DEV-037);
+  - `name+desc`: the same list, then the name question;
+  - `desc_other`: another person's attributes (control).
+- **Score:** the response contains the UM_QA answer as whole words, case-insensitive.
+- **Scored facts:** those θ0 answers under both `name` and `desc`.
+- **Checkpoints:** every selected checkpoint analysed so far, and those DEV-036 adds:
+  - LLaVA: G3 seeds 0–2, run 2, GD, KL, rNPO, and the layers-20–31 run;
+  - Qwen r128: NPO seeds 0–2, and KL.
+
+**Predictions and thresholds,** per checkpoint, on the scored forget facts:
+- **Leak inside text:** `desc` accuracy ≥ 0.85, and `desc` − `name` ≥ 0.20.
+- **No leak:** `desc` ≤ `name` + 0.10 (the edit reaches the description route too).
+- Otherwise partial.
+- **Name-bound checkpoints** (DEV-033, 035, 036: "name-bound, before the merge") are predicted to leak. The account is
+  **contradicted** if two or more of them show "no leak".
+- **Expectation, no verdict:** run 2 and LLaVA G3 seed 1 forget by a switch on text-only questions about a person,
+  spread over the prompt (DEV-015, DEV-021). The description is also a text-only question about a person, so these two
+  may not leak here although they leak by portrait.
+- Reported: `name+desc` (does the description rescue the answer when the name is present, as the portrait does in
+  LLaVA?), the retain facts under every form, and `desc_other` on θu.
+
+**Validity checks** (the script aborts otherwise):
+- θ0 through the LoRA-disabled model must reproduce DEV-037's vanilla level: `desc` accuracy on these facts within
+  0.10 of the same script run on the plain vanilla. Checked once per model family on the first checkpoint.
+- At least 40 scored forget facts.
+
+**Known limits:**
+- One description wording; the description gives away 8 attributes, so it is a strong cue.
+- The scored facts are the ones the vanilla can already reach by description (about half).
+- The "contains" score is lenient to format, and blind to a response that lists several candidates.
+
+**Sizing:** 700 facts × 4 forms × 2 models = 5600 short text generations per checkpoint, about 4–6 minutes each.
+About 14 checkpoints, two at a time on one GPU: about 40 minutes.
+
+**Outcome** (2026-11-23, about 20:05–20:44 UTC; code as hashed in `logs/dev038/launch.txt`, uncommitted; GPU 0; all 15 jobs
+exit 0).
+- **Smoke test:** run on 4 people (LLaVA G3 seed 0, Qwen NPO seed 0), looked at, and deleted before the full runs.
+- **Validity:** θ0 through the LoRA-disabled model matches the plain vanilla exactly (|diff| 0.000, every checkpoint).
+- **Scored forget facts:** 142 of 350 for LLaVA, 182 of 350 for Qwen.
+- **Vanillas, all forget facts:**
+  - LLaVA: `name` 0.68, `desc` 0.47, `name+desc` 0.70.
+  - Qwen: `name` 1.00, `desc` 0.52, `name+desc` 0.95.
+  - `desc_other`: 0.03 in both.
+- **Outputs:** `results/<model>/mech_umu/<run>/step<N>/desc_leak/`.
+
+θu on the scored forget facts (share of responses containing the answer; θ0 = 1.00 by construction):
+
+| checkpoint | `name` | `desc` | `name+desc` | `desc_other` | retain `name` / `desc` | verdict |
+|---|---|---|---|---|---|---|
+| LLaVA NPO G3 s0 (name-bound) | 0.18 | **0.90** | 0.80 | 0.06 | 0.84 / 0.83 | leak inside text |
+| LLaVA NPO G3 s2 (name-bound) | 0.25 | **0.89** | 0.75 | 0.05 | 0.84 / 0.90 | leak inside text |
+| LLaVA NPO G3 s1 (switch) | 0.32 | **0.88** | 0.76 | 0.04 | 0.90 / 0.88 | leak inside text |
+| LLaVA run 2 (switch; fails gate 1) | 0.57 | 0.84 | 0.92 | 0.10 | 0.65 / 0.91 | partial |
+| LLaVA GD s0 | 0.52 | **0.85** | 0.77 | 0.08 | 0.84 / 0.83 | leak inside text |
+| LLaVA GD s1 | 0.55 | 0.81 | 0.80 | 0.07 | 0.86 / 0.81 | partial |
+| LLaVA KL s0 | 0.59 | 0.80 | 0.74 | 0.11 | 0.90 / 0.86 | partial |
+| LLaVA rNPO 4e-4 s1 | 0.47 | **0.86** | 0.69 | 0.06 | 0.89 / 0.86 | leak inside text |
+| LLaVA NPO, LoRA in L20–31 | 0.30 | 0.76 | 0.56 | 0.06 | 0.87 / 0.77 | partial |
+| Qwen NPO s0 | 0.00 | **0.87** | 0.12 | 0.07 | 0.91 / 0.94 | leak inside text |
+| Qwen NPO s1 | 0.00 | **0.95** | 0.07 | 0.05 | 0.94 / 0.97 | leak inside text |
+| Qwen NPO s2 | 0.02 | **0.91** | 0.08 | 0.06 | 0.93 / 0.97 | leak inside text |
+| Qwen KL s0 | 0.59 | 0.74 | 0.66 | 0.06 | 0.86 / 0.75 | partial |
+
+**Verdict:** 8 of 13 checkpoints leak inside text, 5 are partial, none is "no leak". No name-bound checkpoint shows "no
+leak", so **the account is not contradicted.**
+
+**Reading (exploratory):**
+- **A text question without the name escapes the edit.** With the name the answer is given for 0.00–0.59 of the
+  facts, with the description for 0.74–0.95.
+  - The gap is largest where the forgetting is deepest (Qwen NPO: 0.00–0.02 against 0.87–0.95).
+  - `desc_other` stays at 0.04–0.11, so the answers still come from the person described.
+- **The partial cases are not cases of forgetting by description.** Their `desc` on the forget facts (0.74–0.84) is
+  about what the same model gives on the retain facts (0.75–0.91). The drop below 1.00 is collateral, not targeted.
+- **The expectation for the switch type was wrong.** LLaVA G3 seed 1 leaks by description as the name-bound seeds do
+  (0.88).
+- **Name and description together** behave as name and portrait do: LLaVA gives the answer (0.56–0.92), Qwen does
+  not (0.07–0.12 under NPO). The LLaVA–Qwen difference of DEV-030/035 is therefore not about vision.
+- **Paraphrases that keep the name stay forgotten** (query-form sweep, DEV-013/019/025: e.g. G3 seed 0, 0.14 / 0.15 /
+  0.14 for the base form and two paraphrases; first name or last name alone 0.17–0.23). The dividing line is the name
+  in the question, not the wording and not the modality.
+- **Limits:**
+  - One description wording, with 8 attributes given.
+  - Only the facts the vanilla reaches by description are scored (41% and 52%).
+  - "Unlearning is not robust to rephrasing" is known for language models; what is specific here is which rewordings
+    escape.
+
 ### DEV-036 — 2026-11-23 — other unlearning methods: is the text-only edit always written before the merge? (decided by: user; design by: implementer)
 **Why.** Every mechanism result so far uses one objective, NPO + retain (plus relative NPO on LLaVA). The paper's
 third claim is that the account holds across methods. This entry adds UMU-Bench's other baselines that have a retain
@@ -1420,6 +2943,77 @@ added runs).
 - The two rNPO grid runs on Qwen (2e-4, 4e-4) also run there first, with the main queue's exact command. They are the
   last entries of the main queue, which will find them done and go on to the lr choice, seed 1 and the tests.
 - A small placeholder process holds 2.5 GB on GPUs 6 and 7, so that the main queue's tests are not placed there.
+
+**Outcome** (2026-11-23, 16:38–21:15 UTC; code as hashed in `logs/dev036/launch.txt` and `logs/dev036b/launch.txt`,
+uncommitted; 27 runs, all exit 0; every test's own checks passed, no test needed a retry).
+- **Code edit during the run:** `scripts/unlearn_umu.py` and `vlmu/umu.py` were edited at 20:40 UTC for DEV-039
+  (`desc_mix`, off by default). Only the last run, GD on Qwen seed 1, started after that (20:41). Its objective code
+  path is unchanged.
+- **Outputs:** `runs/<model>/umu_unlearn/umu_<method>_txt_lr…`; tests under `results/<model>/mech_umu/<run>/step<N>/`.
+
+**Runs and selection (gate 1′).** Forget dc txt at the selected step; "—" = no qualifying checkpoint.
+
+| method | LLaVA seed 0 grid → chosen | LLaVA seed 1 | Qwen seed 0 grid → chosen | Qwen seed 1 |
+|---|---|---|---|---|
+| GD | 5e-5 —, 1e-4 —, **2e-4** (0.67, step 300) | 0.68, step 300 | 5e-5 —, 1e-4 —, 2e-4 —, 4e-4 —, **8e-4** (0.25, step 228) | — (retain 0.88 / 0.89) |
+| KL | 5e-5 —, 1e-4 —, **2e-4** (0.70, step 228) | — (retain txt 0.84) | 5e-5 —, 1e-4 —, **2e-4** (0.57, step 190) | — (retain img 0.88) |
+| PO | 1e-4 —, 2e-4 — (retain 0.89 / 0.90) | not run | 1e-4 —, **2e-4** (0.10, step 152) | 0.14, step 190 |
+| rNPO | existing runs: only 4e-4 seed 1 qualifies (0.50, step 300) | | 2e-4 — (0.87), 4e-4 — (0.75): under-forgets | not run |
+
+Non-qualifying fallback checkpoints, analysed and flagged with *: LLaVA KL seed 1 (step 190), LLaVA PO seed 0 (2e-4,
+step 228), Qwen GD seed 1 (step 300), Qwen KL seed 1 (step 190).
+
+**Readout and tests per analysed checkpoint** (R from the split at L*; F in nats on the first answer token):
+
+| checkpoint | forget dc txt / img / txt+img | F(T) | R_pre_name / R_post_name | R_pre_all / R_post_all | class | F(NI) | link 6 a/b/c |
+|---|---|---|---|---|---|---|---|
+| LLaVA GD s0 | 0.67 / 0.94 / 0.97 | 4.0 | 0.87 / 0.03 | 0.97 / 0.23 | name-bound | 0.04 | ✓ ✓ ✓ |
+| LLaVA GD s1 | 0.68 / 0.94 / 0.97 | 5.5 | 0.79 / 0.03 | 0.92 / 0.43 | name-bound | 0.06 | ✗ ✓ ✓ |
+| LLaVA KL s0 | 0.70 / 0.94 / 0.92 | 7.9 | 0.59 / 0.10 | 0.76 / 0.71 | mixed | 0.11 | ✗ ✓ ✓ |
+| LLaVA rNPO s1 | 0.50 / 0.88 / 0.85 | 4.0 | 0.76 / 0.07 | 0.85 / 0.29 | name-bound | 0.09 | ✓ ✓ ✓ |
+| Qwen GD s0 | 0.25 / 0.92 / 0.29 | 91.5 | 0.99 / 0.00 | 0.99 / 0.87 | name-bound | 0.00 | ✗ ✓ ✓ |
+| Qwen KL s0 | 0.57 / 0.84 / 0.69 | 6.5 | 0.81 / 0.02 | 0.91 / 0.57 | name-bound | 0.02 | ✗ ✓ ✓ |
+| Qwen PO s0 | 0.10 / 0.86 / 0.38 | 5.9 | 0.53 / 0.02 | 0.95 / 0.98 | mixed | 0.25 | ✗ ✗ ✓ |
+| Qwen PO s1 | 0.14 / 0.92 / 0.39 | 5.5 | 0.56 / 0.02 | 0.93 / 0.98 | mixed | 0.21 | ✗ ✗ ✓ |
+| LLaVA KL s1 * | 0.53 / 0.91 / 0.71 | 24.6 | 0.48 / 0.14 | 0.74 / 0.90 | mixed | 1.50 | ✗ ✗ ✓ |
+| LLaVA PO s0 * | 0.45 / 0.80 / 0.89 | 3.9 | 0.38 / 0.15 | 0.80 / 0.97 | mixed | 0.03 | ✓ ✗ ✓ |
+| Qwen GD s1 * | 0.30 / 0.86 / 0.29 | 78.1 | 0.95 / 0.01 | 0.97 / 0.54 | name-bound | 0.36 | ✗ ✓ ✓ |
+| Qwen KL s1 * | 0.65 / 0.90 / 0.70 | 4.8 | 0.97 / 0.02 | 1.00 / 0.49 | name-bound | 0.01 | ✗ ✓ ✓ |
+
+- **N1** (portrait-only question not triggered) is met by every checkpoint except LLaVA KL s1 * (1.50 nats).
+- **Q3** (name localisation, core3) is met exactly by the "name-bound" rows.
+- **Link 5** (summed readout, DEV-032's criterion): met only by PO (max S_u 0.90 for LLaVA *, 0.98 / 0.99 for Qwen).
+  The others reach 0.17–0.50 at most, with S_u ≤ 0.08 up to L* − 6 and |S_0| ≤ 0.04.
+
+**Verdict for "across methods", as pre-registered: mixed.**
+- 5 of the 8 qualifying checkpoints are "name-bound, before the merge": GD (LLaVA ×2, Qwen), rNPO (LLaVA) and KL (Qwen).
+- 3 are "mixed": KL on LLaVA and PO on Qwen (×2). In these, the LoRA after L* is as necessary as the LoRA before it
+  (R_post_all 0.71–0.98).
+- No method is refuted: no checkpoint has R_pre_all < 0.5. Every qualifying checkpoint meets N1.
+- The leak threshold (forget dc img ≥ 0.85) is met by 7 of the 8; Qwen KL s0 is at 0.84.
+
+**Reading (exploratory, formed after seeing these data):**
+- **What holds for every method and both models:**
+  - Text-only unlearning leaves the portrait question nearly intact (forget dc img 0.80–0.94 against txt 0.10–0.70).
+  - The portrait-only question does not trigger the edit.
+  - The forgetting always needs the LoRA before the merge (R_pre_all 0.74–1.00).
+- **What does not hold for every method: "the edit is only on the name tokens, only before the merge".**
+  - GD, rNPO and NPO fit it.
+  - PO has a second, necessary part after the merge. A likely reading: an early part detects the forget question (about
+    half of it on the name tokens), and a late part writes the refusal. Either part off, and the answer returns.
+  - KL on LLaVA looks similar (both halves needed); KL on Qwen is name-bound.
+- **The two-class rule was too narrow.** It required the post-merge LoRA to be dispensable. A fairer statement of the
+  account: the edit is *triggered* before the merge, by the text input. Then all 8 qualifying checkpoints fit. This
+  wording was formed after the data and needs its own test.
+- **PO is the one method whose suppression transfers almost fully to the face route** when the name route's states are
+  copied in (S_u 0.98–0.99). A refusal is a state in the question stream, not a change of the retrieved fact.
+- **Link 5's 0.5 threshold does not travel.** It was set on LLaVA NPO seed 0 (0.60). With shallow forgetting (LLaVA
+  GD, KL) or with very deep forgetting (Qwen GD, F ≈ 80–90 nats) the summed share stays at 0.17–0.50.
+- **Qwen forgets much more per unit of name-question accuracy under GD** (F 78–92 nats). Gradient ascent is unbounded.
+- **Limits:**
+  - Two seeds at most per method, and several cells have one qualifying checkpoint or none.
+  - The lr grids differ by method.
+  - PO on LLaVA and rNPO on Qwen have no qualifying checkpoint.
 
 ### DEV-035 — 2026-11-23 — Qwen unlearning and the mechanism tests on the r128 vanilla (decided by: user; design by: implementer)
 **Decision (user, 2026-11-23, after DEV-034).**

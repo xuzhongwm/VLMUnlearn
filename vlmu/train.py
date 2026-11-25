@@ -49,13 +49,16 @@ class BatchPlan:
 IMAGE_KEYS = ("pixel_values", "image_grid_thw", "image_sizes")
 
 
-def encode(ctx, rows):
+def encode(ctx, rows, retain=False):
     """Training batch; for text-only unlearning (ctx.text_only) asserts that no image input
-    reaches the forward pass."""
+    reaches the forward pass. Retain batches may carry portraits of the retain people if unlearn.retain_img is set
+    (DEV-040); forget batches never do."""
     batch = ctx.adapter.encode_train(rows, ctx.image_root)
-    if getattr(ctx, "text_only", False):
+    if getattr(ctx, "text_only", False) and not (retain and ctx.cfg["unlearn"].get("retain_img")):
         leaked = [k for k in IMAGE_KEYS if k in batch]
         assert not leaked, f"text-only unlearning batch carries image inputs {leaked}: {[r['uid'] for r in rows]}"
+    if not retain and ctx.cfg.get("unlearn", {}).get("modality") == "img" and getattr(ctx, "loss", "nll") != "nll":
+        assert any(k in batch for k in IMAGE_KEYS), "image-only unlearning: a forget batch carries no image (DEV-043)"
     return batch
 
 
@@ -77,7 +80,7 @@ def step_ga(ctx, step):
 
 def step_retain(ctx, step):
     """Retain NLL (retain_weight), backpropagated on its own to halve activation memory."""
-    rb = encode(ctx, ctx.retain_plan.batch(step))
+    rb = encode(ctx, ctx.retain_plan.batch(step), retain=True)
     tok_lp, _, _ = ctx.adapter.answer_logprobs(ctx.model, rb)
     rnll = -tok_lp.mean()
     (ctx.cfg["unlearn"].get("retain_weight", 1.0) * rnll).backward()
@@ -169,7 +172,7 @@ def step_kl(ctx, step):
     retain_weight * KL(p_ref || p_theta) over the retain batch's answer tokens. Reference = the vanilla (adapter
     disabled) on the same batch, no gradient. (UMU's KL.py uses -(p_theta log p_ref) over all positions instead.)"""
     out = step_ga(ctx, step)
-    rb = encode(ctx, ctx.retain_plan.batch(step))
+    rb = encode(ctx, ctx.retain_plan.batch(step), retain=True)
     mask = rb["labels"][:, 1:] != -100
     with torch.no_grad(), ctx.model.disable_adapter():
         ref = ctx.adapter.forward(ctx.model, rb)[:, :-1][mask].float().log_softmax(-1)
