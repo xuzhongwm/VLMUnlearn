@@ -1367,6 +1367,64 @@ the forget facts only.
 **Sizing:** about 70 facts × 8 generations per checkpoint; about 3 minutes per text checkpoint and 6 per portrait
 checkpoint; 15 checkpoints. It runs on GPUs that DEV-053 leaves idle.
 
+**Outcome** (2026-11-25, 05:09–05:33 UTC; code as hashed in `logs/dev054/launch.txt`, uncommitted; GPUs 0 and 6; all
+15 exit 0). Outputs: `results/<model>/mech_umu/<run>/step<N>/answer_level/`. Two smoke tests (LLaVA NPO seed 0, 16
+facts; Qwen portrait-only seed 0, 8 facts) were run first; they are not results.
+
+Validity: in every run `u` and `0` give the same responses as the unhooked model and the model with the adapter
+disabled (1.00), and every row has referent tokens (4.3 name tokens on average in LLaVA, 3.3 in Qwen; 576 and 256
+image tokens).
+
+Accuracy of the generated answer on the forget dc facts (share restored S in brackets); acc_0 is 1.00, and 0.98 for the
+LLaVA portrait questions:
+
+| checkpoint | `u` | `ref_off` | `rest_off` | `read_off` | `ref_only` | verdict |
+|---|---|---|---|---|---|---|
+| *text-only, asked by name* | | | | | | |
+| LLaVA NPO s0 | 0.58 | 0.97 (0.93) | 0.61 (0.07) | 0.64 (0.14) | 0.73 (0.36) | written at the referent tokens |
+| LLaVA NPO s4 | 0.55 | 0.94 (0.87) | 0.55 (0.00) | 0.62 (0.17) | 0.65 (0.23) | written at the referent tokens |
+| LLaVA GD s0 | 0.67 | 0.89 (0.68) | 0.76 (0.27) | 0.77 (0.32) | 0.82 (0.45) | partial |
+| Qwen NPO s0 | 0.01 | 0.94 (0.93) | 0.05 (0.04) | 0.35 (0.34) | 0.38 (0.37) | written at the referent tokens |
+| Qwen NPO s1 | 0.06 | 0.95 (0.94) | 0.17 (0.11) | 0.27 (0.22) | 0.43 (0.39) | written at the referent tokens |
+| Qwen NPO s3 | 0.00 | 0.95 (0.95) | 0.00 (0.00) | 0.32 (0.32) | 0.45 (0.45) | written at the referent tokens |
+| Qwen NPO s4 | 0.22 | 0.97 (0.97) | 0.25 (0.03) | 0.32 (0.13) | 0.35 (0.17) | written at the referent tokens |
+| Qwen GD s0 | 0.25 | 0.88 (0.84) | 0.25 (0.00) | 0.29 (0.05) | 0.43 (0.24) | written at the referent tokens |
+| *portrait-only, asked by portrait* | | | | | | |
+| LLaVA s0 | 0.61 | 0.86 (0.68) | 0.68 (0.20) | 0.74 (0.36) | 0.77 (0.44) | partial |
+| LLaVA s2 | 0.41 | 0.79 (0.66) | 0.52 (0.18) | 0.71 (0.53) | 0.77 (0.63) | partial |
+| LLaVA s3 | 0.41 | 0.88 (0.82) | 0.52 (0.18) | 0.71 (0.53) | 0.71 (0.53) | written at the referent tokens |
+| Qwen s0 | 0.01 | 0.94 (0.93) | 0.04 (0.03) | 0.25 (0.24) | 0.35 (0.34) | written at the referent tokens |
+| Qwen s2 | 0.04 | 0.90 (0.89) | 0.05 (0.01) | 0.19 (0.16) | 0.31 (0.28) | written at the referent tokens |
+| Qwen s3 | 0.09 | 0.96 (0.96) | 0.10 (0.01) | 0.60 (0.56) | 0.68 (0.64) | written at the referent tokens |
+| Qwen s4 | 0.06 | 0.92 (0.92) | 0.09 (0.03) | 0.42 (0.42) | 0.56 (0.53) | written at the referent tokens |
+
+**Verdict:**
+- **Text-only unlearning: the cause holds for the whole answer.** 7 of the 8 checkpoints (88%) meet the rule. The miss
+  is LLaVA GD seed 0 (S 0.68, 0.02 below the bar), the checkpoint that forgets least (0.67).
+- **Portrait-only unlearning: undecided by the rule.** 5 of 7 (71%) meet it: all four Qwen checkpoints, one of three
+  in LLaVA. The two LLaVA misses restore 0.66 and 0.68. No checkpoint is "not" (S ≤ 0.3).
+
+**Reading:**
+- Read on the answer the model generates, switching the adapter off at the three or four name tokens brings the
+  answers back (0.88–0.97), and switching it off at all the other prompt tokens does not (S 0.00–0.11; 0.27 in LLaVA
+  GD). The first-token results of DEV-033 to DEV-048 carry over.
+- The image tokens play the same part for portrait-only unlearning, fully in Qwen and less sharply in LLaVA, where
+  about a fifth of the effect comes from the other prompt tokens.
+- **The edit at the referent tokens is necessary and not the whole effect.** With the adapter on at the referent
+  tokens only, 55–83% of the forgetting remains for text-only unlearning and 36–72% for portrait-only unlearning. The
+  adapter at the positions that produce the answer supplies part of the rest (`read_off` restores 0.05–0.34 and
+  0.16–0.56).
+- The expectation that `read_off` restores much in Qwen and less in LLaVA is **not met**: the ranges overlap (Qwen
+  0.05–0.34, LLaVA 0.14–0.32, text-only).
+- **Limits:** one prompt format; the forget facts only; switching the adapter off at a position also removes what it
+  writes there for later layers.
+
+**Decision by the user (2026-11-25), after seeing the outcome.** The user reads the portrait-only direction as passed as
+well: the two LLaVA misses restore 0.66 and 0.68 against a bar of 0.70, every one of the seven checkpoints restores at
+least 0.66, and the other prompt tokens restore at most 0.20. The pre-registered verdict above stays "undecided" (5 of
+7, bar 80%); the bar is not changed. In the report this direction is given by its numbers (5 of 7 meet the pre-set
+rule; Qwen 0.89–0.96, LLaVA 0.66–0.82) and is treated as supporting the claim, with LLaVA noted as the weaker case.
+
 ### DEV-053 — 2026-11-25 — does unlearning with names and portraits together still leak through a third entry? The name-free description after mixed unlearning (decided by: user; design by: implementer)
 **Why.** Every edit so far stays with the form of its training input: name rows give an edit at the name tokens,
 portrait rows one at the image tokens (DEV-046), and name plus description rows block both text forms while the
@@ -1421,6 +1479,56 @@ two (`desc` 0.92 and 0.84). Prediction: ≥ 0.80 on each.
 **Sizing:** 528 steps per run, about half with portraits, and 8 checkpoint readouts: about 50 minutes per run. Only
 GPUs 0, 6 and 7 are idle, so 4 runs take about 1 h 45 min. Then about 5 minutes per description test (2 + 5
 checkpoints). Status: `logs/dev053/orchestrate.txt`.
+
+**Outcome** (2026-11-25, 03:52–05:48 UTC; code as hashed in `logs/dev053/launch.txt`, uncommitted; GPUs 0, 6 and 7;
+4 training runs and 8 description tests, all exit 0). A `--debug` smoke test of one mixed run (Qwen) was run first.
+Training log lines: 1075 forget rows (600 name rows without an image, 475 portrait rows without a name) and 4283
+retain rows; 540 steps.
+
+Checkpoints of the four runs (forget dc txt / img; unseen retain dc txt / img):
+
+| run | step 136 | 272 | 340 | 408 | 476 | 540 |
+|---|---|---|---|---|---|---|
+| Qwen 2e-4 | 0.74 / 0.71; 0.89 / 0.86 | 0.27 / 0.34; 0.81 / 0.76 | 0.23 / 0.27; 0.90 / 0.89 | 0.03 / 0.14; 0.93 / 0.88 | 0.03 / 0.06; 0.93 / 0.91 | **0.03 / 0.04; 0.93 / 0.90** |
+| Qwen 4e-4 | 0.03 / 0.09; 0.88 / 0.86 | 0.03 / 0.04; 0.90 / 0.80 | 0.03 / 0.05; 0.92 / 0.92 | 0.03 / 0.05; 0.92 / 0.91 | 0.03 / 0.05; 0.92 / 0.90 | 0.03 / 0.05; 0.92 / 0.90 |
+| LLaVA 2e-4 | 0.71 / 0.89; 0.89 / 0.92 | 0.56 / 0.77; 0.87 / 0.91 | 0.52 / 0.70; 0.93 / 0.93 | 0.44 / 0.62; 0.93 / 0.93 | 0.38 / 0.58; 0.92 / 0.91 | **0.30 / 0.58; 0.93 / 0.91** |
+| LLaVA 4e-4 | 0.56 / 0.83; 0.68 / 0.93 | 0.18 / 0.18; 0.91 / 0.84 | 0.06 / 0.05; 0.86 / 0.89 | 0.05 / 0.05; 0.89 / 0.89 | *0.03 / 0.00; 0.87 / 0.92* | 0.03 / 0.03; 0.89 / 0.93 |
+
+Selected (bold): Qwen 2e-4 step 540 and LLaVA 2e-4 step 540. Under the relaxed gate (italic): the same checkpoint for
+Qwen, and LLaVA 4e-4 step 476. Retain-only degeneracy is 0.07–0.10 in every selected checkpoint.
+
+Description test at the selected checkpoints (scored facts: 142 forget for LLaVA, 182 for Qwen; θ0 = 1.00):
+
+| checkpoint | forget dc txt / img / txt+img | forget `name` | forget `desc` | forget `name+desc` | forget `desc_other` | retain `name` / `desc` | selective drop | verdict |
+|---|---|---|---|---|---|---|---|---|
+| Qwen 2e-4, step 540 | 0.03 / 0.04 / 0.01 | 0.00 | **0.85** (155 of 182) | 0.07 | 0.05 | 0.96 / 0.93 | 0.07 | leak through the description |
+| LLaVA 2e-4, step 540 | 0.30 / 0.58 / 0.67 | 0.10 | **0.80** (114 of 142) | 0.45 | 0.06 | 0.90 / 0.86 | 0.06 | leak through the description |
+| LLaVA 4e-4, step 476 (relaxed gate) | 0.03 / 0.00 / 0.08 | 0.01 | 0.74 (105 of 142) | 0.37 | 0.05 | 0.89 / 0.88 | 0.14 | partial |
+
+Part 2, the description test on the portrait-only checkpoints of DEV-047 (forget `name` / `desc`; retain `desc`):
+LLaVA seed 2: 0.91 / 0.80 (114 of 142); 0.87. LLaVA seed 3: 0.95 / 0.83; 0.87. Qwen seed 2: 0.99 / 0.86; 0.92. Qwen
+seed 3: 0.97 / 0.90; 0.97. Qwen seed 4: 0.98 / 0.85; 0.95.
+
+**Verdict:**
+- **Leak through the description in both models** at the selected checkpoints (0.85 and 0.80; the threshold is 0.80).
+  The prediction is met. LLaVA sits on the threshold (0.803).
+- LLaVA's relaxed-gate checkpoint, which forgets both trained forms almost completely, is **partial** (0.74).
+- Part 2: all five portrait-only checkpoints are at or above 0.80 (LLaVA seed 2 at 0.803). With DEV-043's two (0.92,
+  0.84), the description is answered at 0.80–0.92 on all seven portrait-only checkpoints.
+
+**Reading:**
+- **Unlearning with names and portraits together forgets both and leaves the third form.** In Qwen the name and the
+  portrait question fall to 0.03 and 0.04 while the description is answered at 0.85, against 0.93 for retain people.
+  This is the remedy the field uses for the leak from text to image; under a third way of referring to the person it
+  is incomplete in the same way.
+- The description accuracy of the forget people is 0.06–0.14 below that of the retain people, so a small part of the
+  edit does reach the description. It is largest where the two trained forms are forgotten most deeply in LLaVA.
+- Putting the name into the description brings the forgetting back (`name+desc` 0.07 in Qwen, 0.37–0.45 in LLaVA), as
+  in DEV-038: the edit acts when its referent tokens are present.
+- With DEV-038, DEV-039, DEV-043 and DEV-047 this fills the table of training forms against question forms: in every
+  row the trained forms fall (0.03–0.62) and the others stay at 0.80–0.97 (`proposal/figures/mech_matrix.png`).
+- **Limits:** one seed per model; NPO only; the third form is text and lists the person's other attributes; no fourth
+  form was tested, so nothing is known about a model unlearned with all three.
 
 ### DEV-052 — 2026-11-25 — can a forget person be recognised behind the portrait from text alone, and does acting there stop the leak? An activation-level test at the merge (decided by: user; design by: implementer)
 **Why.** DEV-051 found a person code that both routes share after the merge. DEV-050 found that what text-only
